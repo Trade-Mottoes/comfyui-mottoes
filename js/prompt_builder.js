@@ -79,17 +79,21 @@ function stripStateInput(node) {
     if (i >= 0) node.removeInput(i);
 }
 
-/** Remove the frontend's auto-created `state` textarea, returning its value.
- *
- *  A multiline STRING widget is backed by a real <textarea> element, and
- *  splicing the widget out of `node.widgets` does NOT detach that element.
- *  On frontend 1.45.x it is left orphaned over the node: it renders the stale
- *  default JSON, is disconnected from the model, and still accepts typing.
- *  So run the widget's own teardown and detach the element explicitly.
- *
+/** Detach the auto `state` widget's <textarea> element (and its `.dom-widget`
+ *  wrapper). Under the legacy (non-Vue) renderer this element is created lazily
+ *  on the node's first draw — AFTER onNodeCreated — so `widget.element` is still
+ *  null when we splice, and the element is left orphaned over our editor: stale
+ *  default JSON, still typeable. So call this again once the element exists.
+ *  (Nodes 2.0 tears it down itself, so this is a no-op there.) */
+function detachOrphanState(widget) {
+    try { widget?.onRemove?.(); } catch { /* ignore */ }
+    const el = widget?.element;
+    if (el) { try { (el.closest?.(".dom-widget") ?? el).remove(); } catch { /* ignore */ } }
+}
+
+/** Remove the frontend's auto-created `state` widget, returning its value.
  *  Never removes our own DOM widget — both are named `state`, ours is typed
- *  STATE_WIDGET_TYPE. Returns null when there was nothing to remove.
- */
+ *  STATE_WIDGET_TYPE. Returns null when there was nothing to remove. */
 function dropAutoStateWidget(node) {
     const idx = (node.widgets ?? []).findIndex(
         (w) => w.name === STATE_WIDGET && w.type !== STATE_WIDGET_TYPE,
@@ -97,9 +101,10 @@ function dropAutoStateWidget(node) {
     if (idx < 0) return null;
     const w = node.widgets[idx];
     const value = parsedState(w.value);
-    try { w.onRemove?.(); } catch { /* ignore */ }
-    try { w.element?.remove?.(); } catch { /* ignore */ }  // textarea-backed builds
     node.widgets.splice(idx, 1);
+    detachOrphanState(w);                               // element may exist already
+    requestAnimationFrame(() => detachOrphanState(w));  // legacy: created on first draw
+    setTimeout(() => detachOrphanState(w), 300);        // ...or a slightly later one
     return { value };
 }
 

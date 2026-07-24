@@ -59,12 +59,21 @@ function setupResolverEditor(node) {
     const initial = idx >= 0 ? node.widgets[idx].value : "";
     if (idx >= 0) {
         // Splicing alone is not enough: a multiline STRING widget is backed by a
-        // real <textarea>, and on frontend 1.45.x that element is left orphaned
-        // over the node — stale text, still typeable. Tear it down explicitly.
+        // real <textarea>. Under the legacy (non-Vue) renderer that element is
+        // created lazily on the node's first draw — after this runs — so it is
+        // left orphaned over the editor (stale text, still typeable). Nodes 2.0
+        // cleans it up itself. Removal sticks, so detach the widget's own element
+        // once it exists: now, next frame, and once more shortly after.
         const w = node.widgets[idx];
-        try { w.onRemove?.(); } catch { /* ignore */ }
-        try { w.element?.remove?.(); } catch { /* ignore */ }
         node.widgets.splice(idx, 1);
+        const detach = () => {
+            try { w.onRemove?.(); } catch { /* ignore */ }
+            const el = w.element;
+            if (el) { try { (el.closest?.(".dom-widget") ?? el).remove(); } catch { /* ignore */ } }
+        };
+        detach();
+        requestAnimationFrame(detach);
+        setTimeout(detach, 300);
     }
 
     const container = document.createElement("div");

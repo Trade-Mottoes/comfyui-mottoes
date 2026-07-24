@@ -66,7 +66,9 @@ function injectStyles() {
         /* search dialog (teleported to body) */
         .imgsaver-resolver-overlay { position:fixed; inset:0; z-index:10000;
             background:rgba(0,0,0,0.45); display:flex; align-items:flex-start; justify-content:center; }
-        .imgsaver-resolver-overlay .dialog { margin-top:12vh; width:min(560px,90vw); max-height:70vh;
+        /* .res-dialog, not .dialog — the generic class collides with ComfyUI's global
+           .dialog{position:absolute}, which breaks the centring flex flow. */
+        .imgsaver-resolver-overlay .res-dialog { margin-top:6vh; width:min(560px,90vw); max-height:70vh;
             display:flex; flex-direction:column; background:var(--comfy-menu-bg,#2a2a2a);
             border:1px solid var(--border-color,#444); border-radius:8px; overflow:hidden;
             box-shadow:0 12px 40px rgba(0,0,0,0.5); color:var(--input-text,#ddd); font-size:13px; }
@@ -142,7 +144,7 @@ const TEMPLATE = `
 
   <teleport to="body">
     <div v-if="search.open" class="imgsaver-resolver-overlay" @click.self="closeSearch">
-      <div class="dialog">
+      <div class="res-dialog">
         <input ref="searchInput" class="search" :value="search.query"
                @input="search.query = $event.target.value; search.active = 0"
                @keydown="onSearchKey"

@@ -221,6 +221,14 @@ function loraSlots(node) {
     return slots;
 }
 
+/** Multi Lora Loader (Mottoes): the whole LoRA stack lives in a single `loras`
+ *  widget holding a JSON array of {on, lora, strength} rows — not rgthree's
+ *  per-row dict widgets. Detected by that widget's presence; the (bespoke) gallery
+ *  parses the JSON array into per-LoRA metadata. */
+function hasLoraStack(node) {
+    return (node?.widgets ?? []).some(w => w?.name === "loras");
+}
+
 /** Trace a sampler-centred graph into grouped, typed entries (mirrors the gallery).
  *  Grouped Standard (prompts, model, size) → Sampling → LoRAs, each group emitted
  *  contiguously so a single header covers it. */
@@ -255,9 +263,16 @@ export function autoFillEntries(graph) {
 
     // --- LoRAs ---
     for (const n of graph?._nodes ?? []) {
-        if (!/Power Lora Loader/i.test(nodeClass(n))) continue;
-        for (const slot of loraSlots(n)) {
-            if (slot.enabled) add(slot.input, n.id, slot.input, "lora", "LoRAs");
+        const cls = nodeClass(n);
+        if (/Power Lora Loader/i.test(cls)) {
+            // rgthree Power Lora Loader: one {on, lora, strength} widget per row.
+            for (const slot of loraSlots(n)) {
+                if (slot.enabled) add(slot.input, n.id, slot.input, "lora", "LoRAs");
+            }
+        } else if (/Multi Lora Loader/i.test(cls) && hasLoraStack(n)) {
+            // Multi Lora Loader (Mottoes): bind the whole stack once; the gallery
+            // expands the `loras` JSON array into per-LoRA metadata.
+            add("loras", n.id, "loras", "lora", "LoRAs");
         }
     }
     return out;

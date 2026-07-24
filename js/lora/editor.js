@@ -1,13 +1,15 @@
-// Vue editor for the Power Lora Loader node.
+// Vue editor for the Multi Lora Loader node.
 //
 // A standalone Vue app (vendored full build — templates compile at runtime, no
 // build step) mounted into the node's DOM widget. The reactive model is a flat
-// list of LoRA rows; the extension entry (../power_lora_loader.js) owns the DOM
+// list of LoRA rows; the extension entry (../multi_lora_loader.js) owns the DOM
 // widget + (de)serialization and passes the model in. Loading/hashing/CivitAI all
 // happen in Python at execution time — the frontend only edits the stack.
 //
 // UX note: reordering is surfaced as inline ▲/▼ buttons and a drag handle (no
-// right-click context menu, unlike rgthree).
+// right-click context menu, unlike rgthree). One strength drives model + CLIP by
+// default; the header ⇆ toggle splits them into separate model/CLIP strengths
+// (per-row `strengthClip`; null = reuse the model strength, applied in Python).
 
 import * as Vue from "../lib/vue.esm-browser.prod.js";
 import { makeRow } from "./serialize.js";
@@ -15,11 +17,12 @@ import { makeRow } from "./serialize.js";
 const { createApp, reactive, ref, computed, nextTick } = Vue;
 
 const MAX_RESULTS = 300;
+const STEP = 0.05;
 
 function injectStyles() {
-    if (document.getElementById("imgsaver-lora-css")) return;
+    if (document.getElementById("mottoes-lora-css")) return;
     const style = document.createElement("style");
-    style.id = "imgsaver-lora-css";
+    style.id = "mottoes-lora-css";
     // Themed via ComfyUI / PrimeVue CSS variables (literal fallbacks) so the editor
     // follows the active theme in both the classic and Nodes 2.0 renderers.
     style.textContent = `
@@ -34,12 +37,16 @@ function injectStyles() {
         .pll-editor button:disabled { opacity:0.35; cursor:default; }
         .pll-editor input:focus, .pll-editor button:focus { outline:none; border-color:var(--p-primary-color,#4a90d9); }
 
-        /* header */
-        .pll-head { display:flex; align-items:center; gap:6px; padding:0 2px 2px; }
+        /* header — columns mirror the row so labels sit over their fields */
+        .pll-head { display:flex; align-items:center; gap:5px; padding:0 5px 2px; }
+        .pll-head .pll-headlead { flex:0 0 12px; }
         .pll-head .pll-alllabel { flex:1 1 0; font-weight:600; color:var(--descrip-text,#aaa);
             text-transform:uppercase; letter-spacing:0.03em; font-size:10px; }
-        .pll-head .pll-slabel { flex:0 0 148px; text-align:center; font-weight:600;
+        .pll-head .pll-slabel { flex:0 0 48px; text-align:center; font-weight:600;
             color:var(--descrip-text,#aaa); text-transform:uppercase; letter-spacing:0.03em; font-size:10px; }
+        .pll-head .pll-headtail { flex:0 0 72px; display:flex; align-items:center; justify-content:flex-end; }
+        .pll-head .pll-cliptog { height:16px; padding:0 6px; font-size:11px; line-height:1; }
+        .pll-head .pll-cliptog.on { border-color:var(--p-primary-color,#4a90d9); color:var(--p-primary-color,#4a90d9); }
 
         /* rows */
         .pll-rows { display:flex; flex-direction:column; gap:4px; }
@@ -53,20 +60,19 @@ function injectStyles() {
         .pll-name { flex:1 1 0; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
             text-align:left; }
         .pll-name.empty { color:var(--descrip-text,#888); font-style:italic; }
-        .pll-strength { flex:0 0 62px; text-align:center; -moz-appearance:textfield; }
-        .pll-strength::-webkit-outer-spin-button, .pll-strength::-webkit-inner-spin-button { margin:0; }
-        .pll-move { flex:0 0 22px; padding:0; line-height:1; }
-        .pll-remove { flex:0 0 24px; padding:0; }
+        .pll-strength { flex:0 0 48px; min-width:0; padding:2px 3px; text-align:center; }
+        .pll-move { flex:0 0 20px; padding:0; line-height:1; }
+        .pll-remove { flex:0 0 22px; padding:0; }
         .pll-remove:hover { border-color:var(--error-text,#c0504d); color:var(--error-text,#c0504d); }
 
-        /* toggle switch */
-        .pll-tog { flex:0 0 34px; height:18px; border-radius:9px; position:relative; padding:0;
+        /* toggle switch — the .pll-editor prefix lets height/radius beat the base button rule */
+        .pll-editor .pll-tog { flex:0 0 34px; height:16px; border-radius:8px; position:relative; padding:0;
             background:var(--comfy-input-bg,#222); border:1px solid var(--border-color,#555); cursor:pointer; }
-        .pll-tog::after { content:''; position:absolute; top:1px; left:1px; width:13px; height:13px;
+        .pll-tog::after { content:''; position:absolute; top:1px; left:1px; width:12px; height:12px;
             border-radius:50%; background:var(--descrip-text,#999); transition:transform .12s, background .12s; }
         .pll-tog.on { background:var(--p-primary-color,#4a90d9); border-color:var(--p-primary-color,#4a90d9); }
-        .pll-tog.on::after { transform:translateX(15px); background:#fff; }
-        .pll-tog.mixed::after { transform:translateX(7px); background:#e0a44a; }
+        .pll-tog.on::after { transform:translateX(18px); background:#fff; }
+        .pll-tog.mixed::after { transform:translateX(9px); background:#e0a44a; }
 
         .pll-add button { width:100%; height:26px; }
         .pll-empty { padding:8px; text-align:center; color:var(--descrip-text,#888); font-size:11px;
@@ -100,10 +106,16 @@ function injectStyles() {
 const TEMPLATE = `
 <div class="pll-editor">
   <div v-if="model.rows.length" class="pll-head">
+    <span class="pll-headlead"></span>
     <button class="pll-tog" :class="allClass" @click="toggleAll"
             :title="allState === true ? 'Disable all' : 'Enable all'"></button>
     <span class="pll-alllabel">Toggle all</span>
-    <span class="pll-slabel">Strength</span>
+    <span v-if="separate" class="pll-slabel">Model</span>
+    <span class="pll-slabel">{{ separate ? 'CLIP' : 'Strength' }}</span>
+    <span class="pll-headtail">
+      <button class="pll-cliptog" :class="{on:separate}" @click="toggleSeparate"
+              :title="separate ? 'Use one strength for model + CLIP' : 'Separate model & CLIP strengths'">⇆</button>
+    </span>
   </div>
 
   <div class="pll-rows">
@@ -115,9 +127,14 @@ const TEMPLATE = `
               :title="r.on ? 'Disable' : 'Enable'"></button>
       <button class="pll-name" :class="{empty:!r.lora}" @click="openSearch(r)"
               :title="r.lora || 'Click to choose a LoRA'">{{ label(r) }}</button>
-      <input class="pll-strength" type="number" step="0.05" :value="r.strength"
-             @change="setStrength(r,$event.target.value)"
-             title="LoRA strength (model + CLIP)" />
+      <input class="pll-strength" type="text" inputmode="decimal" :value="fmt(r.strength)"
+             @change="setStrength(r,'strength',$event.target.value)"
+             @keydown="onStrengthKey($event,r,'strength')"
+             :title="separate ? 'Model strength' : 'Strength (model + CLIP)'" />
+      <input v-if="separate" class="pll-strength" type="text" inputmode="decimal" :value="fmt(r.strengthClip)"
+             @change="setStrength(r,'strengthClip',$event.target.value)"
+             @keydown="onStrengthKey($event,r,'strengthClip')"
+             title="CLIP strength" />
       <button class="pll-move" :disabled="i===0" @click="move(i,-1)" title="Move up">▲</button>
       <button class="pll-move" :disabled="i===model.rows.length-1" @click="move(i,1)" title="Move down">▼</button>
       <button class="pll-remove" @click="remove(i)" title="Remove">✕</button>
@@ -167,6 +184,11 @@ function dirName(path) {
     return i >= 0 ? p.slice(0, i) : "";
 }
 
+/** Always display strengths as n.nn (a bare "1" reads as out of place). */
+function fmt(v) {
+    return (Number.isFinite(v) ? v : 0).toFixed(2);
+}
+
 /**
  * Mount the editor into `container`. `loadLoras()` resolves to the array of LoRA
  * filenames (from the backend route); `onChange()` runs after any mutation that
@@ -199,6 +221,10 @@ export function mountEditor({ container, initialRows = [], loadLoras, onChange }
             const allClass = computed(() =>
                 allState.value === true ? "on" : allState.value === null ? "mixed" : "",
             );
+            // "Separate model/CLIP" mode is derived from the data: a row carries a
+            // non-null strengthClip only in separate mode, so no extra widget/flag
+            // is needed and the mode round-trips through save/load for free.
+            const separate = computed(() => model.rows.some((r) => r.strengthClip != null));
             const rowClass = (r, i) => ({
                 off: !r.on,
                 dragging: i === dragFrom.value,
@@ -211,9 +237,25 @@ export function mountEditor({ container, initialRows = [], loadLoras, onChange }
                 const to = allState.value !== true; // any-off (or all-off) → all-on; all-on → all-off
                 model.rows.forEach((r) => (r.on = to));
             };
-            const setStrength = (r, v) => {
+            const setStrength = (r, prop, v) => {
                 const n = Number(v);
-                r.strength = Number.isFinite(n) ? Math.round(n * 100) / 100 : 0;
+                if (Number.isFinite(n)) r[prop] = Math.round(n * 100) / 100; // ignore junk, revert on blur
+            };
+            const onStrengthKey = (ev, r, prop) => {
+                if (ev.key !== "ArrowUp" && ev.key !== "ArrowDown") return;
+                ev.preventDefault();
+                const cur = Number.isFinite(r[prop]) ? r[prop] : 0;
+                r[prop] = Math.round((cur + (ev.key === "ArrowUp" ? STEP : -STEP)) * 100) / 100;
+            };
+            const toggleSeparate = () => {
+                if (separate.value) {
+                    model.rows.forEach((r) => (r.strengthClip = null));
+                } else {
+                    model.rows.forEach((r) => {
+                        if (r.strengthClip == null) r.strengthClip = Number.isFinite(r.strength) ? r.strength : 1;
+                    });
+                }
+                changed();
             };
             const remove = (i) => { model.rows.splice(i, 1); changed(); };
             const move = (i, dir) => {
@@ -224,6 +266,7 @@ export function mountEditor({ container, initialRows = [], loadLoras, onChange }
             };
             const addLora = () => {
                 const r = makeRow({ lora: null });
+                if (separate.value) r.strengthClip = r.strength; // keep the new row in the current mode
                 model.rows.push(r);
                 changed();
                 nextTick(() => openSearch(r));
@@ -283,8 +326,8 @@ export function mountEditor({ container, initialRows = [], loadLoras, onChange }
 
             return {
                 model, search, searchInput, loading, results,
-                allState, allClass, rowClass, label, baseName, dirName,
-                toggle, toggleAll, setStrength, remove, move, addLora,
+                allState, allClass, separate, rowClass, label, baseName, dirName, fmt,
+                toggle, toggleAll, setStrength, onStrengthKey, toggleSeparate, remove, move, addLora,
                 onDragStart, onDragOver, onDrop, onDragEnd,
                 openSearch, closeSearch, onSearchKey, choose,
             };

@@ -52,14 +52,22 @@ function savedStack(vals) {
     return null;
 }
 
-/** Remove the frontend's auto-created `loras` textarea, returning its value.
- *
- *  A multiline STRING widget is backed by a real <textarea>; splicing the widget
- *  out of `node.widgets` does not detach that element, so run its own teardown
- *  and detach explicitly (see the Prompt Builder entry for the gory details).
+/** Detach the auto `loras` widget's <textarea> element (and its `.dom-widget`
+ *  wrapper). Under the legacy (non-Vue) renderer this element is created lazily
+ *  on the node's first draw — AFTER onNodeCreated — so `widget.element` is still
+ *  null when we splice, and the element is left orphaned over our editor: stale
+ *  default JSON, still typeable. So call this again once the element exists.
+ *  (Nodes 2.0 tears it down itself, so this is a no-op there. Same fix as the
+ *  Prompt Builder / Metadata Resolver entries.) */
+function detachOrphanState(widget) {
+    try { widget?.onRemove?.(); } catch { /* ignore */ }
+    const el = widget?.element;
+    if (el) { try { (el.closest?.(".dom-widget") ?? el).remove(); } catch { /* ignore */ } }
+}
+
+/** Remove the frontend's auto-created `loras` widget, returning its value.
  *  Never removes our own DOM widget — both are named `loras`, ours is typed
- *  STATE_WIDGET_TYPE. Returns null when there was nothing to remove.
- */
+ *  STATE_WIDGET_TYPE. Returns null when there was nothing to remove. */
 function dropAutoStateWidget(node) {
     const idx = (node.widgets ?? []).findIndex(
         (w) => w.name === STATE_WIDGET && w.type !== STATE_WIDGET_TYPE,
@@ -67,9 +75,10 @@ function dropAutoStateWidget(node) {
     if (idx < 0) return null;
     const w = node.widgets[idx];
     const value = parsedStack(w.value);
-    try { w.onRemove?.(); } catch { /* ignore */ }
-    try { w.element?.remove?.(); } catch { /* ignore */ }
     node.widgets.splice(idx, 1);
+    detachOrphanState(w);                               // element may exist already
+    requestAnimationFrame(() => detachOrphanState(w));  // legacy: created on first draw
+    setTimeout(() => detachOrphanState(w), 300);        // ...or a slightly later one
     return { value };
 }
 

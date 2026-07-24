@@ -17,7 +17,11 @@ import { makeRow } from "./serialize.js";
 const { createApp, reactive, ref, computed, nextTick } = Vue;
 
 const MAX_RESULTS = 300;
-const STEP = 0.05;
+const STEP = 0.05;              // coarse strength increment (arrow keys / scrub)
+const FINE_STEP = 0.01;         // fine increment when Shift is held
+const SCRUB_PX_PER_STEP = 10;   // horizontal drag distance for one increment
+const WARN_ABS = 3;             // |strength| above this gets a caution tint (a rough
+                                // fat-finger guard — not a per-LoRA CivitAI bound)
 
 function injectStyles() {
     if (document.getElementById("mottoes-lora-css")) return;
@@ -60,7 +64,9 @@ function injectStyles() {
         .pll-name { flex:1 1 0; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
             text-align:left; }
         .pll-name.empty { color:var(--descrip-text,#888); font-style:italic; }
-        .pll-strength { flex:0 0 48px; min-width:0; padding:2px 3px; text-align:center; }
+        .pll-strength { flex:0 0 48px; min-width:0; padding:2px 3px; text-align:center; cursor:ew-resize; }
+        .pll-strength:focus { cursor:text; }
+        .pll-strength.pll-warn { color:#e0a44a; border-color:#e0a44a; }
         .pll-move { flex:0 0 20px; padding:0; line-height:1; }
         .pll-remove { flex:0 0 22px; padding:0; }
         .pll-remove:hover { border-color:var(--error-text,#c0504d); color:var(--error-text,#c0504d); }
@@ -78,10 +84,11 @@ function injectStyles() {
         .pll-empty { padding:8px; text-align:center; color:var(--descrip-text,#888); font-size:11px;
             border:1px dashed var(--border-color,#444); border-radius:6px; }
 
-        /* search dialog (teleported to body) */
+        /* search dialog (teleported to body) — a spacious centred palette kept high on
+           the page (not anchored to the node) so there's room to browse. */
         .pll-overlay { position:fixed; inset:0; z-index:10000; background:rgba(0,0,0,0.45);
             display:flex; align-items:flex-start; justify-content:center; }
-        .pll-overlay .dialog { margin-top:12vh; width:min(560px,90vw); max-height:70vh;
+        .pll-overlay .pll-dialog { margin-top:6vh; width:min(560px,90vw); max-height:70vh;
             display:flex; flex-direction:column; background:var(--comfy-menu-bg,#2a2a2a);
             border:1px solid var(--border-color,#444); border-radius:8px; overflow:hidden;
             box-shadow:0 12px 40px rgba(0,0,0,0.5); color:var(--input-text,#ddd); font-size:13px; }
@@ -127,14 +134,20 @@ const TEMPLATE = `
               :title="r.on ? 'Disable' : 'Enable'"></button>
       <button class="pll-name" :class="{empty:!r.lora}" @click="openSearch(r)"
               :title="r.lora || 'Click to choose a LoRA'">{{ label(r) }}</button>
-      <input class="pll-strength" type="text" inputmode="decimal" :value="fmt(r.strength)"
+      <input class="pll-strength" :class="{'pll-warn':isOut(r.strength)}" type="text" inputmode="decimal"
+             :value="fmt(r.strength)"
              @change="setStrength(r,'strength',$event.target.value)"
              @keydown="onStrengthKey($event,r,'strength')"
-             :title="separate ? 'Model strength' : 'Strength (model + CLIP)'" />
-      <input v-if="separate" class="pll-strength" type="text" inputmode="decimal" :value="fmt(r.strengthClip)"
+             @pointerdown="onStrengthDown($event,r,'strength')"
+             @dblclick.prevent="resetStrength(r,'strength')"
+             :title="(separate ? 'Model strength' : 'Strength (model + CLIP)') + ' — drag to scrub, double-click resets'" />
+      <input v-if="separate" class="pll-strength" :class="{'pll-warn':isOut(r.strengthClip)}" type="text" inputmode="decimal"
+             :value="fmt(r.strengthClip)"
              @change="setStrength(r,'strengthClip',$event.target.value)"
              @keydown="onStrengthKey($event,r,'strengthClip')"
-             title="CLIP strength" />
+             @pointerdown="onStrengthDown($event,r,'strengthClip')"
+             @dblclick.prevent="resetStrength(r,'strengthClip')"
+             title="CLIP strength — drag to scrub, double-click resets" />
       <button class="pll-move" :disabled="i===0" @click="move(i,-1)" title="Move up">▲</button>
       <button class="pll-move" :disabled="i===model.rows.length-1" @click="move(i,1)" title="Move down">▼</button>
       <button class="pll-remove" @click="remove(i)" title="Remove">✕</button>
@@ -149,7 +162,7 @@ const TEMPLATE = `
 
   <teleport to="body">
     <div v-if="search.open" class="pll-overlay" @click.self="closeSearch">
-      <div class="dialog">
+      <div class="pll-dialog">
         <input ref="searchInput" class="search" :value="search.query"
                @input="search.query = $event.target.value; search.active = 0"
                @keydown="onSearchKey" placeholder="Search LoRAs by name or folder…" />
@@ -245,7 +258,40 @@ export function mountEditor({ container, initialRows = [], loadLoras, onChange }
                 if (ev.key !== "ArrowUp" && ev.key !== "ArrowDown") return;
                 ev.preventDefault();
                 const cur = Number.isFinite(r[prop]) ? r[prop] : 0;
-                r[prop] = Math.round((cur + (ev.key === "ArrowUp" ? STEP : -STEP)) * 100) / 100;
+                const delta = (ev.shiftKey ? FINE_STEP : STEP) * (ev.key === "ArrowUp" ? 1 : -1);
+                r[prop] = Math.round((cur + delta) * 100) / 100;
+            };
+            const resetStrength = (r, prop) => { r[prop] = 1; };
+            const isOut = (v) => Number.isFinite(v) && Math.abs(v) > WARN_ABS;
+            // Drag horizontally on a strength field to scrub it in steps (~10px per
+            // increment; 0.05 coarse, 0.01 with Shift held). A click (<3px move) still
+            // focuses the field for typing; only past the threshold do we scrub + suppress
+            // text selection, then blur on release.
+            const onStrengthDown = (ev, r, prop) => {
+                if (ev.button !== 0) return;
+                const startX = ev.clientX;
+                const startVal = Number.isFinite(r[prop]) ? r[prop] : 0;
+                const target = ev.currentTarget;
+                let scrubbing = false;
+                const onMove = (e) => {
+                    const dx = e.clientX - startX;
+                    if (!scrubbing && Math.abs(dx) < 3) return;
+                    scrubbing = true;
+                    e.preventDefault();
+                    const step = e.shiftKey ? FINE_STEP : STEP;         // Shift = fine (0.01)
+                    const steps = Math.round(dx / SCRUB_PX_PER_STEP);   // ~10px per increment
+                    r[prop] = Math.round((startVal + steps * step) * 100) / 100;
+                };
+                const onUp = () => {
+                    target.removeEventListener("pointermove", onMove);
+                    target.removeEventListener("pointerup", onUp);
+                    target.removeEventListener("pointercancel", onUp);
+                    if (scrubbing) target.blur();
+                };
+                target.addEventListener("pointermove", onMove);
+                target.addEventListener("pointerup", onUp);
+                target.addEventListener("pointercancel", onUp);
+                try { target.setPointerCapture(ev.pointerId); } catch { /* ignore */ }
             };
             const toggleSeparate = () => {
                 if (separate.value) {
@@ -326,8 +372,8 @@ export function mountEditor({ container, initialRows = [], loadLoras, onChange }
 
             return {
                 model, search, searchInput, loading, results,
-                allState, allClass, separate, rowClass, label, baseName, dirName, fmt,
-                toggle, toggleAll, setStrength, onStrengthKey, toggleSeparate, remove, move, addLora,
+                allState, allClass, separate, rowClass, label, baseName, dirName, fmt, isOut,
+                toggle, toggleAll, setStrength, onStrengthKey, onStrengthDown, resetStrength, toggleSeparate, remove, move, addLora,
                 onDragStart, onDragOver, onDrop, onDragEnd,
                 openSearch, closeSearch, onSearchKey, choose,
             };

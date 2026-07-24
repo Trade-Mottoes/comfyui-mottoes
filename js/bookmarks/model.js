@@ -90,6 +90,10 @@ export function suggestCombo(existing) {
 
 // ---- centering -------------------------------------------------------------
 
+// Only ever zoom OUT to frame a group — never magnify past 1:1, so jumping to a
+// small group centres it at a readable size instead of blowing it up.
+const MAX_FIT_SCALE = 1;
+
 /** Fit `group` into the canvas viewport (scaled to fit, centered) with padding. */
 export function fitGroup(group, pad = 60) {
     const canvas = app.canvas;
@@ -103,7 +107,7 @@ export function fitGroup(group, pad = 60) {
     const vw = rect.width || 1200;
     const vh = rect.height || 800;
     const raw = Math.min(vw / (gw + pad * 2), vh / (gh + pad * 2));
-    const scale = Math.max(ds.min_scale ?? 0.1, Math.min(raw, ds.max_scale ?? 2));
+    const scale = Math.max(ds.min_scale ?? 0.1, Math.min(raw, MAX_FIT_SCALE));
     ds.scale = scale;
     ds.offset[0] = vw / 2 / scale - (gx + gw / 2);
     ds.offset[1] = vh / 2 / scale - (gy + gh / 2);

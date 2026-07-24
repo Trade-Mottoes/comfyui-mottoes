@@ -1,0 +1,31 @@
+ComfyUI-Mottoes
+===============
+
+This project is licensed under the MIT License (see LICENSE).
+
+Original work
+-------------
+The following nodes and their frontend editors are original works, authored for
+this project:
+
+  - Prompt Builder
+      nodes/prompt_builder.py, js/prompt_builder.js, js/prompt/
+  - Workflow Metadata Resolver
+      nodes/introspection.py, js/metadata_resolver_picker.js, js/resolver/
+  - Multi Lora Loader
+      nodes/multi_lora_loader.py, js/multi_lora_loader.js, js/lora/,
+      services/lora_info.py
+
+Vendored third-party code
+-------------------------
+The following helper modules are vendored, with modifications, from
+ComfyUI-Image-Saver (https://github.com/alexopus/ComfyUI-Image-Saver) — itself a
+fork of comfy-image-saver (https://github.com/giriss/comfy-image-saver) —
+MIT License, Copyright (c) 2023 Girish Gopaul:
+
+  - services/hashing.py
+  - services/civitai.py
+  - services/file_utils.py
+
+js/lib/vue.esm-browser.prod.js is the Vue.js runtime (https://vuejs.org),
+MIT License, Copyright (c) 2013-present Yuxi (Evan) You and Vue contributors.

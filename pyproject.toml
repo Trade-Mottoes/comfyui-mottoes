@@ -1,0 +1,15 @@
+[project]
+name = "comfyui-mottoes"
+description = "Modern Vue-based ComfyUI nodes: Prompt Builder, Workflow Metadata Resolver, and Multi Lora Loader."
+version = "0.1.0"
+license = { file = "LICENSE" }
+dependencies = ["requests", "tqdm"]
+
+[project.urls]
+Repository = "https://github.com/Trade-Mottoes/comfyui-mottoes"
+#  Used by Comfy Registry https://comfyregistry.org
+
+[tool.comfy]
+PublisherId = "trade-mottoes"
+DisplayName = "ComfyUI-Mottoes"
+Icon = ""

@@ -1,20 +1,22 @@
 import { app } from "../../scripts/app.js";
 
-// Toggle graph link visibility with a hotkey. ComfyUI's Comfy.LinkRenderMode
-// takes 0=Straight, 1=Linear, 2=Spline, 3=Hidden and drives the canvas render
-// mode in both renderers. We remember the active visible style, flip to Hidden,
-// and flip back — so links are there only when you want them.
+// Toggle graph link visibility with a hotkey.
 //
-// The hotkey is handled by our OWN keydown listener keyed on `event.code` (the
-// physical key), NOT ComfyUI's built-in keybinding. ComfyUI matches by
-// `event.key` (the character), which breaks on macOS — Option+L emits "¬", so
-// an Alt+L binding never matches — and is Shift-case sensitive. `event.code`
-// ("KeyL") is immune to all of that. Change COMBO to rebind.
+// IMPORTANT: this does NOT register a ComfyUI command/keybinding. ComfyUI's own
+// key handler (a) matches by event.key — the character — which breaks on macOS
+// (Option+L emits "¬", Shift upper-cases), and (b) GRABS a bound combo before an
+// extension listener sees it. So any shortcut you set for this in Settings →
+// Keybindings actively sabotages it. We own the key ourselves, keyed on
+// event.code (the physical key), exactly like the bookmark combos that work.
+//
+// Comfy.LinkRenderMode: 0=Straight 1=Linear 2=Spline 3=Hidden. We remember the
+// active visible style, flip to Hidden, and flip back.
 
 const SETTING = "Comfy.LinkRenderMode";
 const HIDDEN = 3;
 let lastVisible = 2; // spline; overwritten with the active style each time we hide
 
+// Physical-key combo. Change here to rebind. `code` is layout/Option/Shift-proof.
 const COMBO = { code: "KeyL", ctrl: true, shift: true, alt: false, meta: false };
 
 function toggleLinks() {
@@ -48,18 +50,29 @@ function onKeydown(e) {
     }
 }
 
+// Earlier builds registered a command; if any ComfyUI keybinding was saved for it,
+// ComfyUI will keep grabbing that combo. Strip those stored bindings so the key
+// reaches us cleanly. (Safe no-op once there are none.)
+function stripStaleBindings() {
+    const setting = app.extensionManager.setting;
+    const CMD = "mottoes.links.toggle";
+    for (const id of ["Comfy.Keybinding.NewBindings", "Comfy.Keybinding.UnsetBindings"]) {
+        try {
+            const list = setting.get(id);
+            if (Array.isArray(list) && list.some((b) => b?.commandId === CMD)) {
+                setting.set(id, list.filter((b) => b?.commandId !== CMD));
+            }
+        } catch {
+            /* ignore */
+        }
+    }
+}
+
 app.registerExtension({
     name: "Mottoes.LinkVisibility",
-    // Command is kept so it's runnable from the palette; the key is ours, above.
-    commands: [
-        {
-            id: "mottoes.links.toggle",
-            label: "Toggle link visibility (hide / show)",
-            function: toggleLinks,
-        },
-    ],
     setup() {
-        // Capture phase so we win before ComfyUI's own key handling.
-        window.addEventListener("keydown", onKeydown, true);
+        stripStaleBindings();
+        window.addEventListener("keydown", onKeydown, true); // capture phase
+        console.info("[Mottoes] Link visibility ready — Ctrl+Shift+L toggles graph links");
     },
 });

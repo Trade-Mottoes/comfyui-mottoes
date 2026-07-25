@@ -1,6 +1,6 @@
 # ComfyUI Prompt Builder — Design Spec
 
-**Status:** draft v1 · **Target:** new Vue-standalone node in ComfyUI-Image-Saver · decisions locked except where marked ⚠️.
+**Status:** Phase 1 shipped · Choice Blocks single-select landed · **Target:** Vue-standalone node in **ComfyUI-Mottoes** (repo renamed from ComfyUI-Image-Saver; this spec predates the rename, so ignore stale "Image Saver" mentions below).
 
 ## 1. Why
 
@@ -10,7 +10,7 @@ ComfyUI prompt entry is a single dumb textarea. Every "prompt" node (including P
 
 ## 2. The node
 
-- **Name:** `Prompt Builder (Image Saver)` — class `PromptBuilder`, category `image_saver/prompt`.
+- **Name:** `Prompt Builder (Mottoes)` — class `PromptBuilder`, category `Mottoes`.
 - **Output:** `STRING` (the built prompt). Second `STRING` for a negative role: Phase 3.
 - **Widgets/inputs:**
   - `seed` INT + `control_after_generate` — the reroll lever (native ComfyUI idiom).
@@ -109,14 +109,14 @@ Section { "id", "title", "enabled", "collapsed", "content" }
 
 ## 10. Marinara-inspired additions (proposed, phased — flag any you don't want)
 
-- **Choice Blocks (P2, recommended).** Named variables with a curated option list, **label ≠ value** (dropdown shows "Cinematic", injects "cinematic, dramatic lighting, film grain"), referenced `%style%` in any section. The single biggest world-info-flexibility win. Rendered as a compact "knobs" strip in the editor (later: real node combo widgets). single / multi / random-pick, save-as-default.
+- **Choice Blocks — ✅ single-select landed.** Named variables with a curated option list, **label ≠ value** (dropdown shows "Cinematic", injects "cinematic, dramatic lighting, film grain"), referenced `%name%` in any section. Resolved in Python with **variable semantics** — one value per build, reused across every reference; injected values re-resolve nested `{}`/`[]`/`__`; undefined `%name%` warns and is left verbatim. Rendered as a compact "knobs" strip with an options-manager dialog; selection keys on option id (rename/reorder-safe). State carries `mode:"single"`, so **multi** and **random-pick** slot in later — extension points are `_choice_value` (Python) and the strip control (JS). *Still to do:* multi / random-pick, save-as-default, exposing choices as real node combo widgets.
 - **Conditionals / variables (P3).** `{{if style == cinematic}}…{{/if}}`, `{{setvar}}` — conditional inclusion without graph branching. Heavy; likely optional for image work.
 - **Group nesting + XML/MD wrap (P3).** From the preset system; probably unneeded for image prompts.
 
 ## 11. Phasing
 
-- **Phase 1 (prototype = everything you listed):** sections (add/remove/disable/reorder/collapse) · inline editor w/ live highlighting · `{a|b|c}` weighted + `[a|b|c]` sequential + `__name__` · per-token pin (auto/manual) · popup list editor · seed reroll + locked/cache + Build · history + restore + preview · Python resolver + route + `STRING` output · tests.
-- **Phase 2:** Choice Blocks (knobs) · token counts · wildcard-file management UI.
+- **Phase 1 — ✅ shipped:** sections (add/remove/disable/reorder/collapse/**split-at-cursor**) · inline editor w/ live highlighting · `{a|b|c}` weighted + `[a|b|c]` sequential + `__name__` · per-token pin (auto/manual, with **pinned-value chips**) · popup list editor · seed reroll + locked/cache + Build · history + restore + preview · Python resolver + route + `STRING` output · tests.
+- **Phase 2:** Choice Blocks — ✅ **single-select** (knobs strip + manager) landed; multi / random to do · token counts · wildcard-file management UI.
 - **Phase 3:** conditionals / variables · **section groups** (collapsible; enable/disable and reorder a whole group as a block, à la the Resolver's group-block drag — JA flagged wanting this on 2026-07-23; deferred as possible overkill) · negative-role output · expose choices as node combo widgets.
 
 ## 12. Styling
@@ -127,5 +127,5 @@ Match host theme via ComfyUI / PrimeVue CSS vars (repo's approach): `--comfy-inp
 
 1. `[a|b|c]` = sequential rotation (not combinatorial). ⚠️ assumed.
 2. Resolution in Python + preview route (not dual JS/Python grammar). ⚠️ assumed.
-3. Adopt Choice Blocks in P2. ⚠️ assumed, recommended.
-4. Node name `Prompt Builder (Image Saver)`. ⚠️ assumed.
+3. Adopt Choice Blocks in P2. ✅ single-select shipped (multi / random later).
+4. Node name `Prompt Builder (Mottoes)`. ✅ resolved (repo renamed from ComfyUI-Image-Saver).

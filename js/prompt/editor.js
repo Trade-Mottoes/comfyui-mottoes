@@ -266,9 +266,7 @@ const TEMPLATE = `
     <button @click="historyOpen=!historyOpen" :disabled="!model.history.length"
             :title="model.history.length + ' builds'">History</button>
     <select class="pb-joiner" :value="model.settings.joiner" @change="setJoiner($event.target.value)" title="How sections join">
-      <option value=", ">comma</option>
-      <option value="\\n">newline</option>
-      <option value=" BREAK ">BREAK</option>
+      <option v-for="j in JOIN_OPTS" :key="j.t" :value="j.v">{{ j.t }}</option>
     </select>
   </div>
 
@@ -395,9 +393,7 @@ const TEMPLATE = `
           <template v-if="choiceDlg.mode==='multi'">
             <span class="pb-dsub">join with</span>
             <select class="pb-cjoin" :value="choiceDlg.join" @change="choiceDlg.join=$event.target.value" title="How the selected values join">
-              <option value=", ">comma</option>
-              <option value=" ">space</option>
-              <option value="\\n">newline</option>
+              <option v-for="j in MULTI_JOIN_OPTS" :key="j.t" :value="j.v">{{ j.t }}</option>
             </select>
           </template>
           <span class="pb-grow"></span>
@@ -473,6 +469,20 @@ export function mountEditor({ container, initialState, getSeed, setSeed, build, 
             const setMode = (m) => { model.settings.mode = m; changed(); };
             const toggleMode = () => setMode(model.settings.mode === "locked" ? "reroll" : "locked");
             const setJoiner = (v) => { model.settings.joiner = v; changed(); };
+
+            // Separator options. `\n` here is a REAL newline (char 10) — bound via
+            // JS so it can't degrade to the literal string "\n" the way an HTML
+            // attribute in the template would.
+            const JOIN_OPTS = [
+                { v: ", ", t: "comma" },
+                { v: "\n", t: "newline" },
+                { v: " BREAK ", t: "BREAK" },
+            ];
+            const MULTI_JOIN_OPTS = [
+                { v: ", ", t: "comma" },
+                { v: " ", t: "space" },
+                { v: "\n", t: "newline" },
+            ];
 
             // ---- drag reorder ----
             const sectionClass = (s, i) => ({
@@ -796,7 +806,7 @@ export function mountEditor({ container, initialState, getSeed, setSeed, build, 
 
             return {
                 model, rootEl, busy, error, preview, previewOpen, historyOpen,
-                highlight, onScroll: syncScroll, setPopupType,
+                highlight, onScroll: syncScroll, setPopupType, JOIN_OPTS, MULTI_JOIN_OPTS,
                 setTitle, setContent, toggleEnabled, toggleCollapsed, removeSection, addSection,
                 toggleMode, setJoiner,
                 sectionClass, onDragStart, onDragOver, onDrop, onDragEnd,

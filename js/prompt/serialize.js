@@ -48,7 +48,7 @@ export function makeChoice(init = {}) {
         mode: init.mode ?? "single",
         options,
         selected,
-        join: init.join ?? ", ",
+        join: init.join === "\\n" ? "\n" : init.join ?? ", ",   // migrate old literal-\n join
     };
 }
 
@@ -68,6 +68,7 @@ export function defaultState() {
 function normalize(o) {
     const st = defaultState();
     st.settings = { ...st.settings, ...(o.settings || {}) };
+    if (st.settings.joiner === "\\n") st.settings.joiner = "\n";   // migrate old literal-\n joiner to a real newline
     st.sections =
         Array.isArray(o.sections) && o.sections.length
             ? o.sections.map((s) => makeSection(s))

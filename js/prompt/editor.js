@@ -9,7 +9,7 @@
 
 import * as Vue from "../lib/vue.esm-browser.prod.js";
 import { makeSection } from "./serialize.js";
-import { highlightHtml, tokenContextAt, splitTopLevel, parseOption, buildTokenString } from "./tokens.js";
+import { tokenize, highlightHtml, tokenContextAt, splitTopLevel, parseOption, buildTokenString } from "./tokens.js";
 
 const { createApp, reactive, ref, nextTick } = Vue;
 
@@ -32,6 +32,48 @@ function syncScroll(ev) {
         bd.scrollTop = ev.target.scrollTop;
         bd.scrollLeft = ev.target.scrollLeft;
     }
+}
+
+/** Where an Alt+Enter split actually cuts. The caret snaps LEFT to the start of
+ *  the token or word it sits inside, so a {…}/[…] token or a mid-word is never
+ *  bisected — the whole unit falls into the new second section. A caret already
+ *  at a whitespace or token boundary cuts exactly there. */
+function snapSplit(content, caret) {
+    const p = Math.max(0, Math.min(caret | 0, content.length));
+    for (const seg of tokenize(content)) {
+        if (p <= seg.start || p >= seg.end) continue;   // not strictly inside this segment
+        if (seg.type !== "text") return seg.start;       // inside a token → cut before it
+        if (/\s/.test(content[p - 1]) || /\s/.test(content[p])) return p;  // at a word edge already
+        let q = p;
+        while (q > seg.start && !/\s/.test(content[q - 1])) q--;
+        return q;                                         // inside a word → cut before the word
+    }
+    return p;
+}
+
+/** Re-key a `${sectionId}|${raw}|${occ}` map (pins or counters) across a split at
+ *  `cut`. Tokens left of the cut keep their key (occurrence order is preserved);
+ *  tokens at/after it move to `newId`, renumbered from zero. Keys belonging to
+ *  other sections pass through untouched. `cut` is always on a token boundary, so
+ *  nothing is split mid-token. */
+function rekeyMap(map, origId, newId, cut, content) {
+    if (!map || typeof map !== "object") return map || {};
+    const out = {};
+    const counts = {}, after = {};
+    for (const seg of tokenize(content)) {
+        if (seg.type === "text") continue;
+        const occ = counts[seg.text] ?? 0; counts[seg.text] = occ + 1;
+        const oldKey = `${origId}|${seg.text}|${occ}`;
+        if (!(oldKey in map)) continue;
+        if (seg.start < cut) {
+            out[oldKey] = map[oldKey];
+        } else {
+            const n = after[seg.text] ?? 0; after[seg.text] = n + 1;
+            out[`${newId}|${seg.text}|${n}`] = map[oldKey];
+        }
+    }
+    for (const k in map) if (!k.startsWith(origId + "|")) out[k] = map[k];
+    return out;
 }
 
 function injectStyles() {
@@ -160,6 +202,20 @@ function injectStyles() {
         .pb-dfoot button:hover { border-color:var(--p-primary-color,#4a90d9); }
         .pb-dfoot .pb-pinnote { font-size:11px; color:var(--descrip-text,#aaa); }
         .pb-dfoot .pb-grow { flex:1 1 0; }
+
+        .pb-shead .pb-split { flex:0 0 26px; padding:0; }
+        .pb-shead .pb-split:hover { border-color:var(--p-primary-color,#4a90d9); }
+
+        /* pin chips — which value each pinned token is locked to (green to match the token tint) */
+        .pb-pins { display:flex; flex-wrap:wrap; gap:4px; padding:1px 2px 0; }
+        .pb-pinchip { display:inline-flex; align-items:center; gap:3px; max-width:100%; cursor:pointer;
+            font-size:11px; line-height:1.4; padding:1px 3px 1px 5px; border-radius:10px;
+            color:var(--input-text,#ddd); background:rgba(94,201,160,0.14); border:1px solid rgba(94,201,160,0.45); }
+        .pb-pinchip:hover { border-color:#5ec9a0; }
+        .pb-pinchip .pb-pinval { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:170px; }
+        .pb-pinchip .pb-pinx { flex:0 0 auto; height:16px; padding:0 2px; border:0; border-radius:3px;
+            background:transparent; color:var(--descrip-text,#888); font-size:11px; line-height:1; cursor:pointer; }
+        .pb-pinchip .pb-pinx:hover { color:var(--error-text,#c0504d); }
     `;
     document.head.appendChild(style);
 }
@@ -202,12 +258,20 @@ const TEMPLATE = `
         <input type="checkbox" class="pb-en" :checked="s.enabled" @change="toggleEnabled(s)" title="Enable / disable" />
         <span class="pb-chev" @click="toggleCollapsed(s)" :title="s.collapsed ? 'Expand' : 'Collapse to title'">{{ s.collapsed ? '▸' : '▾' }}</span>
         <input class="pb-title" :value="s.title" @input="setTitle(s,$event.target.value)" :placeholder="titlePlaceholder(s)" />
+        <button v-if="!s.collapsed" class="pb-split" @click="splitAtCaret(s)" title="Split at the cursor (Alt+Enter)">✂</button>
         <button class="pb-remove" @click="removeSection(i)" title="Remove section">✕</button>
       </div>
       <div v-if="!s.collapsed" class="pb-ta-wrap">
         <div class="pb-backdrop" v-html="highlight(s)"></div>
         <textarea class="pb-ta" v-pbgrow :value="s.content" @input="setContent(s,$event)" @scroll="onScroll"
-                  @dblclick="onTaDblClick(s,$event)" title="Double-click a {…} or […] token to edit its options as a list" spellcheck="false" placeholder="prompt — {a|b|c} choice · [a|b|c] array · __wildcard__"></textarea>
+                  @keydown="onTaKeydown(s,$event)" @keyup="trackCaret(s,$event)" @click="trackCaret(s,$event)" @select="trackCaret(s,$event)"
+                  @dblclick="onTaDblClick(s,$event)" title="Double-click a {…}/[…] token to edit its options · Alt+Enter splits the section here" spellcheck="false" placeholder="prompt — {a|b|c} choice · [a|b|c] array · __wildcard__"></textarea>
+      </div>
+      <div v-if="!s.collapsed && sectionPins(s).length" class="pb-pins">
+        <span v-for="p in sectionPins(s)" :key="p.key" class="pb-pinchip" @click="openPinEditor(s,p)" :title="p.raw + '  →  ' + p.value">
+          📌<span class="pb-pinval">{{ p.value }}</span>
+          <button class="pb-pinx" @click.stop="unpin(p.key)" title="Unpin — let it re-roll">✕</button>
+        </span>
       </div>
     </div>
   </div>
@@ -460,6 +524,54 @@ export function mountEditor({ container, initialState, getSeed, setSeed, build, 
                 popup.open = false;
             };
 
+            // ---- pin chips: surface which value each pinned token is stuck on ----
+            const sectionPins = (s) => {
+                const pins = model.pins || {};
+                const counts = {};
+                const out = [];
+                for (const seg of tokenize(s.content || "")) {
+                    if (seg.type === "text") continue;
+                    const occ = counts[seg.text] ?? 0; counts[seg.text] = occ + 1;
+                    const key = `${s.id}|${seg.text}|${occ}`;
+                    if (pins[key] !== undefined)
+                        out.push({ key, raw: seg.text, type: seg.type, value: pins[key], start: seg.start });
+                }
+                return out;
+            };
+            const unpin = (key) => { const p = { ...model.pins }; delete p[key]; model.pins = p; changed(); };
+            // wildcard pins have no list dialog — clicking the chip opens the editor only for {…}/[…]
+            const openPinEditor = (s, pin) => { if (pin.type !== "wildcard") openTokenEditor(s, pin.start + 1); };
+
+            // ---- split a section in two at the caret (Alt+Enter / the ✂ header button) ----
+            const carets = {};   // last caret offset per section id; transient, never serialized
+            const trackCaret = (s, ev) => { carets[s.id] = ev.target.selectionStart ?? 0; };
+            const splitSection = (s, caret) => {
+                const idx = model.sections.findIndex((x) => x.id === s.id);
+                if (idx === -1) return;
+                const content = s.content || "";
+                const cut = snapSplit(content, caret);
+                const ns = makeSection({ enabled: s.enabled, content: content.slice(cut) });
+                s.content = content.slice(0, cut);
+                // carry pins/counters on tokens that crossed into the new section
+                model.pins = rekeyMap(model.pins, s.id, ns.id, cut, content);
+                model.counters = rekeyMap(model.counters, s.id, ns.id, cut, content);
+                model.sections.splice(idx + 1, 0, ns);
+                changed();
+                growAll();
+                // land the caret at the top of the new section so you can keep typing
+                nextTick(() => {
+                    const el = rootEl.value?.querySelectorAll("textarea.pb-ta")?.[idx + 1];
+                    if (el) { el.focus(); el.setSelectionRange(0, 0); }
+                });
+            };
+            const splitAtCaret = (s) => splitSection(s, carets[s.id] ?? (s.content || "").length);
+            const onTaKeydown = (s, ev) => {
+                if (ev.key === "Enter" && ev.altKey && !ev.ctrlKey && !ev.metaKey && !ev.shiftKey) {
+                    ev.preventDefault(); ev.stopPropagation();
+                    splitSection(s, ev.target.selectionStart ?? (s.content || "").length);
+                }
+            };
+
             return {
                 model, rootEl, busy, error, preview, previewOpen, historyOpen,
                 highlight, onScroll: syncScroll, setPopupType,
@@ -469,6 +581,7 @@ export function mountEditor({ container, initialState, getSeed, setSeed, build, 
                 doPreview, doBuild, reseed, restore, copyOut,
                 popup, titlePlaceholder, onTaDblClick, addOption, togglePin, closeTokenEditor,
                 optRowClass, onOptDragStart, onOptDragOver, onOptDrop, onOptDragEnd,
+                sectionPins, unpin, openPinEditor, trackCaret, onTaKeydown, splitAtCaret,
             };
         },
         template: TEMPLATE,

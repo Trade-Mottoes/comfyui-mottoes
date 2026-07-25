@@ -241,14 +241,34 @@ def _resolve_wildcard(name, raw, ctx, section_id):
 
 
 def _choice_value(cdef: dict, ctx: dict) -> str:
-    """The value a single-select choice injects: the selected option's value,
-    falling back to the first option. Empty when the choice has no options."""
+    """The value a choice injects, by mode:
+
+    - ``single`` — the selected option's value (falling back to the first).
+    - ``multi``  — every selected option's value, in options order, joined by
+      ``cdef["join"]`` (default ``", "``); empty values dropped.
+    - ``random`` — one option's value, picked seeded by ``(seed, name)`` so it is
+      stable within a build and rerolls with the seed.
+
+    Empty when the choice has no options.
+    """
     options = cdef.get("options") or []
     if not options:
         return ""
-    sel = cdef.get("selected")
-    for o in options:
-        if o.get("id") == sel:
+    mode = cdef.get("mode", "single")
+    if mode == "random":
+        opt = _rng(ctx["seed"], f"choice:{cdef.get('name', '')}").choice(options)
+        return opt.get("value", "") or ""
+    selected = cdef.get("selected")
+    if isinstance(selected, str):        # back-compat: single-select once stored a bare id
+        selected = [selected]
+    elif not isinstance(selected, list):
+        selected = []
+    if mode == "multi":
+        sel = set(selected)
+        vals = [o.get("value", "") or "" for o in options if o.get("id") in sel]
+        return (cdef.get("join") or ", ").join(v for v in vals if v)
+    for o in options:                    # single
+        if o.get("id") in selected:
             return o.get("value", "") or ""
     return options[0].get("value", "") or ""
 

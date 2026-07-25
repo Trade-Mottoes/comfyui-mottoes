@@ -190,14 +190,15 @@ class CoerceStateTests(unittest.TestCase):
         self.assertEqual(pb.resolve_prompt("{not json", 0)["output"], "")
 
 
-def choice(name, options, selected=None, mode="single"):
+def choice(name, options, selected=None, mode="single", join=", "):
     """A choice def. ``options`` are (label, value) tuples or bare value strings;
-    ids are assigned o0, o1, …  ``selected`` is an option id (None → first)."""
+    ids are assigned o0, o1, …  ``selected`` is an option id or list of ids (a
+    bare string exercises the single-select back-compat path)."""
     opts = []
     for i, o in enumerate(options):
         label, value = o if isinstance(o, tuple) else (o, o)
         opts.append({"id": "o%d" % i, "label": label, "value": value})
-    return {"id": name, "name": name, "mode": mode, "options": opts, "selected": selected}
+    return {"id": name, "name": name, "mode": mode, "options": opts, "selected": selected, "join": join}
 
 
 class ChoiceBlockTests(unittest.TestCase):
@@ -249,6 +250,57 @@ class ChoiceBlockTests(unittest.TestCase):
         ch = choice("s", [("A", "alpha"), ("B", "beta")], selected="o1")
         ch["options"] = list(reversed(ch["options"]))  # now [o1(beta), o0(alpha)]
         self.assertEqual(out(["%s%"], choices=[ch]), "beta")
+
+    def test_scalar_selected_back_compat(self):
+        # single-select once stored `selected` as a bare id string
+        ch = choice("s", [("A", "alpha"), ("B", "beta")], selected="o1")
+        self.assertEqual(out(["%s%"], choices=[ch]), "beta")
+
+    def test_list_selected_single(self):
+        ch = choice("s", [("A", "alpha"), ("B", "beta")], selected=["o1"])
+        self.assertEqual(out(["%s%"], choices=[ch]), "beta")
+
+
+class ChoiceMultiTests(unittest.TestCase):
+    def test_joins_selected_in_option_order(self):
+        # selected order is irrelevant; the options order is what's emitted
+        ch = choice("t", [("A", "alpha"), ("B", "beta"), ("C", "gamma")], selected=["o2", "o0"], mode="multi")
+        self.assertEqual(out(["%t%"], choices=[ch]), "alpha, gamma")
+
+    def test_custom_join(self):
+        ch = choice("t", [("A", "a"), ("B", "b")], selected=["o0", "o1"], mode="multi", join=" ")
+        self.assertEqual(out(["%t%"], choices=[ch]), "a b")
+
+    def test_none_selected_is_blank(self):
+        ch = choice("t", [("A", "a")], selected=[], mode="multi")
+        self.assertEqual(out(["x %t% y"], choices=[ch]), "x  y")
+
+    def test_drops_empty_values(self):
+        ch = choice("t", [("A", "alpha"), ("B", ""), ("C", "gamma")], selected=["o0", "o1", "o2"], mode="multi")
+        self.assertEqual(out(["%t%"], choices=[ch]), "alpha, gamma")
+
+
+class ChoiceRandomTests(unittest.TestCase):
+    def test_picks_an_option_value(self):
+        ch = choice("r", [("A", "alpha"), ("B", "beta"), ("C", "gamma")], mode="random")
+        for seed in range(20):
+            self.assertIn(out(["%r%"], seed=seed, choices=[ch]), {"alpha", "beta", "gamma"})
+
+    def test_deterministic_for_seed(self):
+        ch = choice("r", [("A", "alpha"), ("B", "beta"), ("C", "gamma")], mode="random")
+        self.assertEqual(out(["%r%"], seed=5, choices=[ch]), out(["%r%"], seed=5, choices=[ch]))
+
+    def test_varies_over_seeds(self):
+        ch = choice("r", [("A", "a"), ("B", "b"), ("C", "c"), ("D", "d")], mode="random")
+        self.assertGreater(len({out(["%r%"], seed=s, choices=[ch]) for s in range(20)}), 1)
+
+    def test_reused_across_references(self):
+        # a random choice is still a variable: one roll per build, reused everywhere
+        ch = choice("r", [("A", "alpha"), ("B", "beta"), ("C", "gamma")], mode="random")
+        rec = pb.resolve_prompt(state(["%r% / %r%"], choices=[ch]), 3)
+        a, b = rec["output"].split(" / ")
+        self.assertEqual(a, b)
+        self.assertEqual(len([r for r in rec["rolls"] if r["type"] == "var"]), 1)
 
 
 if __name__ == "__main__":

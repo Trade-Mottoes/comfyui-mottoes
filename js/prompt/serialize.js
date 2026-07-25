@@ -29,19 +29,26 @@ export function makeOption(init = {}) {
     };
 }
 
-/** A choice variable, referenced as `%name%`. `selected` is an option id.
- *  `mode` is "single" for now (random/multi reserved for later). */
+/** A choice variable, referenced as `%name%`. `selected` is an array of option
+ *  ids (single uses the first; multi uses all; random ignores it). `join` is the
+ *  multi-mode separator. `mode` is "single" | "multi" | "random". */
 export function makeChoice(init = {}) {
     const options =
         Array.isArray(init.options) && init.options.length
             ? init.options.map(makeOption)
             : [makeOption()];
+    let selected = init.selected;
+    if (typeof selected === "string") selected = [selected];   // back-compat: was a bare id
+    else if (!Array.isArray(selected)) selected = [];
+    selected = selected.filter((id) => options.some((o) => o.id === id));
+    if (!selected.length && options[0]) selected = [options[0].id];   // sane default for single
     return {
         id: init.id || uid("c"),
         name: init.name ?? "",
         mode: init.mode ?? "single",
         options,
-        selected: init.selected ?? options[0]?.id ?? null,
+        selected,
+        join: init.join ?? ", ",
     };
 }
 
@@ -107,7 +114,8 @@ export function toPlain(state) {
             name: c.name,
             mode: c.mode,
             options: c.options.map((o) => ({ id: o.id, label: o.label, value: o.value })),
-            selected: c.selected,
+            selected: Array.isArray(c.selected) ? c.selected : c.selected != null ? [c.selected] : [],
+            join: c.join ?? ", ",
         })),
         cache: state.cache,
         history: state.history,

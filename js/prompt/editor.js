@@ -239,6 +239,16 @@ function injectStyles() {
         .pb-dhead .pb-cname:focus { border-color:var(--p-primary-color,#4a90d9); }
         .pb-orow .pb-csel { flex:0 0 15px; margin-top:7px; cursor:pointer; }
         .pb-orow .pb-clabel { flex:0 0 150px; height:28px; }
+        .pb-dhead .pb-cmode { height:27px; margin-left:2px; }
+        .pb-dfoot .pb-cjoin { height:26px; }
+        .pb-orow .pb-cdice { flex:0 0 15px; margin-top:6px; text-align:center; opacity:0.7; user-select:none; }
+        /* multi summary + random badge in the strip (in place of the single-select dropdown) */
+        .pb-knob .pb-kmulti, .pb-knob .pb-krand { max-width:170px; overflow:hidden; text-overflow:ellipsis;
+            white-space:nowrap; cursor:pointer; height:22px; line-height:20px; box-sizing:border-box; padding:0 5px;
+            color:var(--input-text,#ddd); background:var(--comfy-input-bg,#222);
+            border:1px solid var(--border-color,#444); border-radius:4px; }
+        .pb-knob .pb-kmulti:hover, .pb-knob .pb-krand:hover { border-color:var(--p-primary-color,#4a90d9); }
+        .pb-knob .pb-krand { color:#e0729e; }
     `;
     document.head.appendChild(style);
 }
@@ -276,9 +286,11 @@ const TEMPLATE = `
   <div class="pb-knobs">
     <div v-for="c in model.choices" :key="c.id" class="pb-knob">
       <span class="pb-kname" @click="openChoiceEditor(c)" :title="'Edit choice — reference it as %'+(c.name||'name')+'% in a section'">%{{ c.name || '…' }}%</span>
-      <select class="pb-ksel" :value="c.selected" @change="selectOption(c,$event.target.value)" :title="'Injected: ' + selOptValue(c)">
+      <select v-if="c.mode==='single'" class="pb-ksel" :value="c.selected[0]" @change="selectSingle(c,$event.target.value)" :title="'Injected: ' + selOptValue(c)">
         <option v-for="o in c.options" :key="o.id" :value="o.id">{{ o.label || o.value || '(empty)' }}</option>
       </select>
+      <span v-else-if="c.mode==='multi'" class="pb-kmulti" @click="openChoiceEditor(c)" :title="'Injected: ' + selOptValue(c)">{{ multiSummary(c) }}</span>
+      <span v-else class="pb-krand" @click="openChoiceEditor(c)" title="Rolls one option each build (seeded) — edit options">🎲 random</span>
       <button class="pb-kedit" @click="openChoiceEditor(c)" title="Edit this choice's options">✎</button>
       <button class="pb-krm" @click="removeChoice(c)" title="Remove choice">✕</button>
     </div>
@@ -356,14 +368,22 @@ const TEMPLATE = `
           <span>Choice</span>
           <input class="pb-cname" :value="choiceDlg.name" @input="choiceDlg.name = sanitizeName($event.target.value)"
                  placeholder="name" title="Letters, digits, underscore — referenced as %name%" />
-          <span class="pb-dsub">%{{ choiceDlg.name || 'name' }}% — the menu shows each label; the prompt gets its value</span>
+          <select class="pb-cmode" :value="choiceDlg.mode" @change="setDlgMode($event.target.value)" title="How the value is picked">
+            <option value="single">single</option>
+            <option value="multi">multi</option>
+            <option value="random">random</option>
+          </select>
+          <span class="pb-dsub">%{{ choiceDlg.name || 'name' }}% — {{ modeHint() }}</span>
         </div>
         <div class="pb-orows">
           <div v-for="(o,oi) in choiceDlg.options" :key="o.id" class="pb-orow" :class="cOptRowClass(oi)"
                @dragover.prevent="onCOptDragOver($event,oi)" @drop.prevent="onCOptDrop(oi)">
             <span class="pb-ohandle" draggable="true" @dragstart="onCOptDragStart(oi)" @dragend="onCOptDragEnd" title="Drag to reorder">⠿</span>
-            <input type="radio" class="pb-csel" :checked="choiceDlg.selected===o.id" @change="choiceDlg.selected=o.id"
+            <input v-if="choiceDlg.mode==='single'" type="radio" class="pb-csel" :checked="choiceDlg.selected.includes(o.id)" @change="setDlgSingle(o.id)"
                    title="Select this value (what the prompt uses)" />
+            <input v-else-if="choiceDlg.mode==='multi'" type="checkbox" class="pb-csel" :checked="choiceDlg.selected.includes(o.id)" @change="toggleDlgMulti(o.id)"
+                   title="Include this value" />
+            <span v-else class="pb-cdice" title="In the random pool">🎲</span>
             <input class="pb-clabel" :value="o.label" @input="o.label=$event.target.value" placeholder="label (menu)" />
             <textarea class="pb-oval" v-pbgrowopt rows="1" :value="o.value" @input="o.value=$event.target.value" placeholder="value (injected into the prompt)"></textarea>
             <button class="pb-orm" @click="removeChoiceOption(oi)" title="Remove option">✕</button>
@@ -372,6 +392,14 @@ const TEMPLATE = `
         </div>
         <div class="pb-dfoot">
           <button @click="addChoiceOption">+ Option</button>
+          <template v-if="choiceDlg.mode==='multi'">
+            <span class="pb-dsub">join with</span>
+            <select class="pb-cjoin" :value="choiceDlg.join" @change="choiceDlg.join=$event.target.value" title="How the selected values join">
+              <option value=", ">comma</option>
+              <option value=" ">space</option>
+              <option value="\\n">newline</option>
+            </select>
+          </template>
           <span class="pb-grow"></span>
           <button @click="closeChoiceEditor(true)">Done</button>
         </div>
@@ -642,9 +670,24 @@ export function mountEditor({ container, initialState, getSeed, setSeed, build, 
             };
 
             // ---- choice variables (%name%): the knobs strip + its editor dialog ----
+            // the value(s) a choice injects right now — for the strip tooltip
             const selOptValue = (c) => {
-                const o = (c.options || []).find((x) => x.id === c.selected) || c.options?.[0];
-                return o ? (o.value || "(empty)") : "(no options)";
+                const opts = c.options || [];
+                if (!opts.length) return "(no options)";
+                if (c.mode === "random") return "(one rolled each build)";
+                const sel = new Set(c.selected || []);
+                if (c.mode === "multi") {
+                    const vals = opts.filter((o) => sel.has(o.id)).map((o) => o.value).filter(Boolean);
+                    return vals.length ? vals.join(c.join ?? ", ") : "(none selected)";
+                }
+                const o = opts.find((x) => sel.has(x.id)) || opts[0];
+                return o ? (o.value || "(empty)") : "(none)";
+            };
+            // selected labels, for the multi-mode strip summary
+            const multiSummary = (c) => {
+                const sel = new Set(c.selected || []);
+                const labels = (c.options || []).filter((o) => sel.has(o.id)).map((o) => o.label || o.value || "(empty)");
+                return labels.length ? labels.join(", ") : "pick…";
             };
             const uniqueChoiceName = () => {
                 const used = new Set((model.choices || []).map((c) => c.name));
@@ -652,31 +695,54 @@ export function mountEditor({ container, initialState, getSeed, setSeed, build, 
                 do { name = `choice${n++}`; } while (used.has(name));
                 return name;
             };
-            const selectOption = (c, optId) => { c.selected = optId; changed(); };
+            const selectSingle = (c, optId) => { c.selected = [optId]; changed(); };
             const removeChoice = (c) => {
                 const i = model.choices.findIndex((x) => x.id === c.id);
                 if (i >= 0) { model.choices.splice(i, 1); changed(); }
             };
 
-            const choiceDlg = reactive({ open: false, id: null, name: "", options: [], selected: null });
+            const choiceDlg = reactive({ open: false, id: null, name: "", mode: "single", join: ", ", options: [], selected: [] });
             const sanitizeName = (v) => (v || "").replace(/[^A-Za-z0-9_]/g, "");
+            const modeHint = () => ({
+                single: "the menu shows each label; the prompt gets its value",
+                multi: "tick several — their values are joined",
+                random: "one option is rolled each build (seeded)",
+            }[choiceDlg.mode] || "");
             const openChoiceEditor = (c) => {
                 choiceDlg.id = c.id;
                 choiceDlg.name = c.name;
+                choiceDlg.mode = c.mode || "single";
+                choiceDlg.join = c.join ?? ", ";
                 choiceDlg.options = (c.options || []).map((o) => ({ ...o }));   // edit copies; commit on Done
-                choiceDlg.selected = c.selected ?? choiceDlg.options[0]?.id ?? null;
+                choiceDlg.selected = [...(c.selected || [])];
                 choiceDlg.open = true;
+                remeasureOptions();
+            };
+            const setDlgSingle = (id) => { choiceDlg.selected = [id]; };
+            const toggleDlgMulti = (id) => {
+                const s = new Set(choiceDlg.selected || []);
+                s.has(id) ? s.delete(id) : s.add(id);
+                choiceDlg.selected = choiceDlg.options.filter((o) => s.has(o.id)).map((o) => o.id);  // keep options order
+            };
+            const setDlgMode = (m) => {
+                choiceDlg.mode = m;
+                if (m === "single") {
+                    if (choiceDlg.selected.length > 1) choiceDlg.selected = choiceDlg.selected.slice(0, 1);
+                    if (!choiceDlg.selected.length && choiceDlg.options[0]) choiceDlg.selected = [choiceDlg.options[0].id];
+                }
                 remeasureOptions();
             };
             const addChoiceOption = () => {
                 const o = makeOption();
                 choiceDlg.options.push(o);
-                if (choiceDlg.selected == null) choiceDlg.selected = o.id;
+                if (choiceDlg.mode === "single" && !choiceDlg.selected.length) choiceDlg.selected = [o.id];
                 remeasureOptions();
             };
             const removeChoiceOption = (i) => {
                 const [rm] = choiceDlg.options.splice(i, 1);
-                if (rm && choiceDlg.selected === rm.id) choiceDlg.selected = choiceDlg.options[0]?.id ?? null;
+                if (rm) choiceDlg.selected = (choiceDlg.selected || []).filter((id) => id !== rm.id);
+                if (choiceDlg.mode === "single" && !choiceDlg.selected.length && choiceDlg.options[0])
+                    choiceDlg.selected = [choiceDlg.options[0].id];
             };
             const closeChoiceEditor = (commit) => {
                 if (commit) {
@@ -687,8 +753,16 @@ export function mountEditor({ container, initialState, getSeed, setSeed, build, 
                         const others = new Set(model.choices.filter((x) => x.id !== c.id).map((x) => x.name));
                         if (others.has(nm)) { let k = 2; while (others.has(nm + k)) k++; nm = nm + k; }
                         c.name = nm;
+                        c.mode = choiceDlg.mode;
+                        c.join = choiceDlg.join;
                         c.options = choiceDlg.options.map((o) => makeOption(o));
-                        c.selected = c.options.some((o) => o.id === choiceDlg.selected) ? choiceDlg.selected : (c.options[0]?.id ?? null);
+                        const ids = new Set(c.options.map((o) => o.id));
+                        let sel = (choiceDlg.selected || []).filter((id) => ids.has(id));
+                        if (c.mode === "single") {
+                            sel = sel.slice(0, 1);
+                            if (!sel.length && c.options[0]) sel = [c.options[0].id];
+                        }
+                        c.selected = sel;
                         changed(); growAll();
                     }
                 }
@@ -730,8 +804,9 @@ export function mountEditor({ container, initialState, getSeed, setSeed, build, 
                 popup, titlePlaceholder, onTaDblClick, addOption, togglePin, closeTokenEditor,
                 optRowClass, onOptDragStart, onOptDragOver, onOptDrop, onOptDragEnd,
                 sectionPins, unpin, openPinEditor, trackCaret, onTaKeydown, splitAtCaret,
-                addChoice, removeChoice, selectOption, selOptValue, openChoiceEditor,
-                choiceDlg, sanitizeName, addChoiceOption, removeChoiceOption, closeChoiceEditor,
+                addChoice, removeChoice, selectSingle, selOptValue, multiSummary, openChoiceEditor,
+                choiceDlg, sanitizeName, modeHint, setDlgMode, setDlgSingle, toggleDlgMulti,
+                addChoiceOption, removeChoiceOption, closeChoiceEditor,
                 cOptRowClass, onCOptDragStart, onCOptDragOver, onCOptDrop, onCOptDragEnd,
             };
         },

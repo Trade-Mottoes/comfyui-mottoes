@@ -8,7 +8,7 @@
 // frontend only tokenizes for highlighting and renders the resolved record.
 
 import * as Vue from "../lib/vue.esm-browser.prod.js";
-import { makeSection } from "./serialize.js";
+import { makeSection, makeChoice, makeOption } from "./serialize.js";
 import { tokenize, highlightHtml, tokenContextAt, splitTopLevel, parseOption, buildTokenString } from "./tokens.js";
 
 const { createApp, reactive, ref, nextTick } = Vue;
@@ -216,6 +216,29 @@ function injectStyles() {
         .pb-pinchip .pb-pinx { flex:0 0 auto; height:16px; padding:0 2px; border:0; border-radius:3px;
             background:transparent; color:var(--descrip-text,#888); font-size:11px; line-height:1; cursor:pointer; }
         .pb-pinchip .pb-pinx:hover { color:var(--error-text,#c0504d); }
+
+        /* choice variable %name% — a hue distinct from the three token types + pinned */
+        .pb-editor .tok-var { color:#e0729e; }
+
+        /* knobs strip: the choice variables, picked inline */
+        .pb-knobs { display:flex; flex-wrap:wrap; align-items:center; gap:5px; padding:1px 2px; }
+        .pb-knob { display:inline-flex; align-items:center; gap:3px; max-width:100%;
+            border:1px solid var(--border-color,#444); border-radius:6px; padding:1px 3px 1px 6px;
+            background:var(--comfy-menu-bg,#2a2a2a); }
+        .pb-knob .pb-kname { color:#e0729e; font-weight:600; cursor:pointer; white-space:nowrap; }
+        .pb-knob .pb-kname:hover { text-decoration:underline; }
+        .pb-knob .pb-ksel { height:22px; max-width:160px; }
+        .pb-knob .pb-kedit, .pb-knob .pb-krm { height:22px; flex:0 0 auto; padding:0 5px; }
+        .pb-knob .pb-krm:hover { border-color:var(--error-text,#c0504d); color:var(--error-text,#c0504d); }
+        .pb-knobs .pb-kadd { height:22px; }
+
+        /* choice editor dialog (shares .pb-dialog / .pb-orow with the token editor) */
+        .pb-dhead .pb-cname { width:130px; height:27px; font-weight:600; color:#e0729e;
+            background:var(--comfy-input-bg,#222); border:1px solid var(--border-color,#444);
+            border-radius:4px; padding:3px 6px; }
+        .pb-dhead .pb-cname:focus { border-color:var(--p-primary-color,#4a90d9); }
+        .pb-orow .pb-csel { flex:0 0 15px; margin-top:7px; cursor:pointer; }
+        .pb-orow .pb-clabel { flex:0 0 150px; height:28px; }
     `;
     document.head.appendChild(style);
 }
@@ -248,6 +271,18 @@ const TEMPLATE = `
       <span class="pb-hseed">#{{ h.seed }}</span>
     </div>
     <div v-if="!model.history.length" class="pb-empty">No builds yet</div>
+  </div>
+
+  <div class="pb-knobs">
+    <div v-for="c in model.choices" :key="c.id" class="pb-knob">
+      <span class="pb-kname" @click="openChoiceEditor(c)" :title="'Edit choice — reference it as %'+(c.name||'name')+'% in a section'">%{{ c.name || '…' }}%</span>
+      <select class="pb-ksel" :value="c.selected" @change="selectOption(c,$event.target.value)" :title="'Injected: ' + selOptValue(c)">
+        <option v-for="o in c.options" :key="o.id" :value="o.id">{{ o.label || o.value || '(empty)' }}</option>
+      </select>
+      <button class="pb-kedit" @click="openChoiceEditor(c)" title="Edit this choice's options">✎</button>
+      <button class="pb-krm" @click="removeChoice(c)" title="Remove choice">✕</button>
+    </div>
+    <button class="pb-kadd" @click="addChoice" title="Add a choice variable (a labelled pick-list, referenced as %name%)">+ Choice</button>
   </div>
 
   <div class="pb-sections">
@@ -314,6 +349,36 @@ const TEMPLATE = `
     </div>
   </teleport>
 
+  <teleport to="body">
+    <div v-if="choiceDlg.open" class="pb-overlay" @click.self="closeChoiceEditor(true)">
+      <div class="pb-dialog">
+        <div class="pb-dhead">
+          <span>Choice</span>
+          <input class="pb-cname" :value="choiceDlg.name" @input="choiceDlg.name = sanitizeName($event.target.value)"
+                 placeholder="name" title="Letters, digits, underscore — referenced as %name%" />
+          <span class="pb-dsub">%{{ choiceDlg.name || 'name' }}% — the menu shows each label; the prompt gets its value</span>
+        </div>
+        <div class="pb-orows">
+          <div v-for="(o,oi) in choiceDlg.options" :key="o.id" class="pb-orow" :class="cOptRowClass(oi)"
+               @dragover.prevent="onCOptDragOver($event,oi)" @drop.prevent="onCOptDrop(oi)">
+            <span class="pb-ohandle" draggable="true" @dragstart="onCOptDragStart(oi)" @dragend="onCOptDragEnd" title="Drag to reorder">⠿</span>
+            <input type="radio" class="pb-csel" :checked="choiceDlg.selected===o.id" @change="choiceDlg.selected=o.id"
+                   title="Select this value (what the prompt uses)" />
+            <input class="pb-clabel" :value="o.label" @input="o.label=$event.target.value" placeholder="label (menu)" />
+            <textarea class="pb-oval" v-pbgrowopt rows="1" :value="o.value" @input="o.value=$event.target.value" placeholder="value (injected into the prompt)"></textarea>
+            <button class="pb-orm" @click="removeChoiceOption(oi)" title="Remove option">✕</button>
+          </div>
+          <div v-if="!choiceDlg.options.length" class="pb-empty">No options — add one below</div>
+        </div>
+        <div class="pb-dfoot">
+          <button @click="addChoiceOption">+ Option</button>
+          <span class="pb-grow"></span>
+          <button @click="closeChoiceEditor(true)">Done</button>
+        </div>
+      </div>
+    </div>
+  </teleport>
+
   <div v-if="previewOpen && preview" class="pb-preview">
     <div class="pb-phead">
       <span>Resolved</span>
@@ -363,8 +428,10 @@ export function mountEditor({ container, initialState, getSeed, setSeed, build, 
             // index as `cap` and collapse every textarea.
             const growAll = () => nextTick(() => rootEl.value?.querySelectorAll("textarea.pb-ta").forEach((el) => autoGrow(el)));
 
-            // pins are read here, so the backdrop re-tints the moment one changes
-            const highlight = (s) => highlightHtml(s.content, s.id, model.pins);
+            // defined choice names, so %name% refs tint live (undefined → error)
+            const choiceNameSet = () => new Set((model.choices || []).map((c) => c.name).filter(Boolean));
+            // pins + choice names read here, so the backdrop re-tints the moment either changes
+            const highlight = (s) => highlightHtml(s.content, s.id, model.pins, choiceNameSet());
 
             // ---- section mutations ----
             const setTitle = (s, v) => { s.title = v; changed(); };
@@ -409,6 +476,7 @@ export function mountEditor({ container, initialState, getSeed, setSeed, build, 
                         const snapshot = {
                             sections: model.sections.map((s) => ({ ...s })),
                             pins: { ...model.pins }, counters: { ...model.counters },
+                            choices: model.choices.map((c) => ({ ...c, options: c.options.map((o) => ({ ...o })) })),
                             settings: { ...model.settings }, seed,
                         };
                         model.cache = record;
@@ -433,6 +501,7 @@ export function mountEditor({ container, initialState, getSeed, setSeed, build, 
                 if (!s) return;
                 model.sections.splice(0, model.sections.length, ...s.sections.map((x) => makeSection(x)));
                 model.pins = { ...s.pins }; model.counters = { ...s.counters }; model.settings = { ...s.settings };
+                if (s.choices) model.choices = s.choices.map((c) => makeChoice(c));
                 setSeed?.(s.seed);
                 model.cache = { output: h.output, seed: h.seed, mode: h.mode, builtAt: h.builtAt, sections: h.sections, rolls: h.rolls, warnings: h.warnings };
                 preview.value = h; previewOpen.value = true; historyOpen.value = false;
@@ -572,6 +641,85 @@ export function mountEditor({ container, initialState, getSeed, setSeed, build, 
                 }
             };
 
+            // ---- choice variables (%name%): the knobs strip + its editor dialog ----
+            const selOptValue = (c) => {
+                const o = (c.options || []).find((x) => x.id === c.selected) || c.options?.[0];
+                return o ? (o.value || "(empty)") : "(no options)";
+            };
+            const uniqueChoiceName = () => {
+                const used = new Set((model.choices || []).map((c) => c.name));
+                let n = 1, name;
+                do { name = `choice${n++}`; } while (used.has(name));
+                return name;
+            };
+            const selectOption = (c, optId) => { c.selected = optId; changed(); };
+            const removeChoice = (c) => {
+                const i = model.choices.findIndex((x) => x.id === c.id);
+                if (i >= 0) { model.choices.splice(i, 1); changed(); }
+            };
+
+            const choiceDlg = reactive({ open: false, id: null, name: "", options: [], selected: null });
+            const sanitizeName = (v) => (v || "").replace(/[^A-Za-z0-9_]/g, "");
+            const openChoiceEditor = (c) => {
+                choiceDlg.id = c.id;
+                choiceDlg.name = c.name;
+                choiceDlg.options = (c.options || []).map((o) => ({ ...o }));   // edit copies; commit on Done
+                choiceDlg.selected = c.selected ?? choiceDlg.options[0]?.id ?? null;
+                choiceDlg.open = true;
+                remeasureOptions();
+            };
+            const addChoiceOption = () => {
+                const o = makeOption();
+                choiceDlg.options.push(o);
+                if (choiceDlg.selected == null) choiceDlg.selected = o.id;
+                remeasureOptions();
+            };
+            const removeChoiceOption = (i) => {
+                const [rm] = choiceDlg.options.splice(i, 1);
+                if (rm && choiceDlg.selected === rm.id) choiceDlg.selected = choiceDlg.options[0]?.id ?? null;
+            };
+            const closeChoiceEditor = (commit) => {
+                if (commit) {
+                    const c = model.choices.find((x) => x.id === choiceDlg.id);
+                    if (c) {
+                        // name: non-empty and unique among the other choices
+                        let nm = choiceDlg.name || c.name || uniqueChoiceName();
+                        const others = new Set(model.choices.filter((x) => x.id !== c.id).map((x) => x.name));
+                        if (others.has(nm)) { let k = 2; while (others.has(nm + k)) k++; nm = nm + k; }
+                        c.name = nm;
+                        c.options = choiceDlg.options.map((o) => makeOption(o));
+                        c.selected = c.options.some((o) => o.id === choiceDlg.selected) ? choiceDlg.selected : (c.options[0]?.id ?? null);
+                        changed(); growAll();
+                    }
+                }
+                choiceDlg.open = false;
+            };
+            const addChoice = () => {
+                const c = makeChoice({ name: uniqueChoiceName() });
+                model.choices.push(c);
+                changed(); growAll();
+                openChoiceEditor(c);   // jump straight into filling it in
+            };
+
+            // choice-option reorder (own drag state, separate from sections + token dialog)
+            const cOptDragFrom = ref(-1);
+            const cOptDropAt = ref(-1);
+            const cOptRowClass = (i) => ({
+                dragging: i === cOptDragFrom.value,
+                "drop-before": i === cOptDropAt.value && cOptDragFrom.value !== -1 && cOptDragFrom.value !== i,
+            });
+            const onCOptDragStart = (i) => { cOptDragFrom.value = i; };
+            const onCOptDragOver = (ev, i) => { ev.dataTransfer.dropEffect = "move"; cOptDropAt.value = i; };
+            const onCOptDrop = (i) => {
+                const from = cOptDragFrom.value;
+                if (from !== -1 && from !== i) {
+                    const [moved] = choiceDlg.options.splice(from, 1);
+                    choiceDlg.options.splice(i > from ? i - 1 : i, 0, moved);
+                }
+                cOptDragFrom.value = -1; cOptDropAt.value = -1;
+            };
+            const onCOptDragEnd = () => { cOptDragFrom.value = -1; cOptDropAt.value = -1; };
+
             return {
                 model, rootEl, busy, error, preview, previewOpen, historyOpen,
                 highlight, onScroll: syncScroll, setPopupType,
@@ -582,6 +730,9 @@ export function mountEditor({ container, initialState, getSeed, setSeed, build, 
                 popup, titlePlaceholder, onTaDblClick, addOption, togglePin, closeTokenEditor,
                 optRowClass, onOptDragStart, onOptDragOver, onOptDrop, onOptDragEnd,
                 sectionPins, unpin, openPinEditor, trackCaret, onTaKeydown, splitAtCaret,
+                addChoice, removeChoice, selectOption, selOptValue, openChoiceEditor,
+                choiceDlg, sanitizeName, addChoiceOption, removeChoiceOption, closeChoiceEditor,
+                cOptRowClass, onCOptDragStart, onCOptDragOver, onCOptDrop, onCOptDragEnd,
             };
         },
         template: TEMPLATE,
@@ -595,6 +746,7 @@ export function mountEditor({ container, initialState, getSeed, setSeed, build, 
         model.settings = s.settings;
         model.sections.splice(0, model.sections.length, ...s.sections);
         model.pins = s.pins; model.counters = s.counters;
+        model.choices = s.choices || [];
         model.cache = s.cache; model.history = s.history;
         nextTick(() => container.querySelectorAll("textarea.pb-ta").forEach((el) => autoGrow(el)));
     };

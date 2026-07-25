@@ -32,6 +32,7 @@ def state(sections, **kw):
         "sections": secs,
         "pins": kw.get("pins", {}),
         "counters": kw.get("counters", {}),
+        "choices": kw.get("choices", []),
     }
 
 
@@ -187,6 +188,67 @@ class CoerceStateTests(unittest.TestCase):
 
     def test_malformed_json_is_empty(self):
         self.assertEqual(pb.resolve_prompt("{not json", 0)["output"], "")
+
+
+def choice(name, options, selected=None, mode="single"):
+    """A choice def. ``options`` are (label, value) tuples or bare value strings;
+    ids are assigned o0, o1, …  ``selected`` is an option id (None → first)."""
+    opts = []
+    for i, o in enumerate(options):
+        label, value = o if isinstance(o, tuple) else (o, o)
+        opts.append({"id": "o%d" % i, "label": label, "value": value})
+    return {"id": name, "name": name, "mode": mode, "options": opts, "selected": selected}
+
+
+class ChoiceBlockTests(unittest.TestCase):
+    def test_injects_selected_value(self):
+        ch = choice("style", [("Cinematic", "cinematic, dramatic lighting"), ("Anime", "anime")], selected="o0")
+        self.assertEqual(out(["a portrait, %style%"], choices=[ch]), "a portrait, cinematic, dramatic lighting")
+
+    def test_label_differs_from_value(self):
+        # the label is editor-only; the value is what lands in the prompt
+        ch = choice("m", [("Pretty name", "the_value")], selected="o0")
+        self.assertEqual(out(["%m%"], choices=[ch]), "the_value")
+
+    def test_falls_back_to_first_option(self):
+        ch = choice("style", [("A", "alpha"), ("B", "beta")], selected="nope")
+        self.assertEqual(out(["%style%"], choices=[ch]), "alpha")
+        ch2 = choice("style", [("A", "alpha")], selected=None)
+        self.assertEqual(out(["%style%"], choices=[ch2]), "alpha")
+
+    def test_variable_reused_across_references(self):
+        # one value per build, reused — and only one roll is recorded for it
+        ch = choice("x", [("A", "alpha")], selected="o0")
+        rec = pb.resolve_prompt(state(["%x% and %x%"], choices=[ch]), 0)
+        self.assertEqual(rec["output"], "alpha and alpha")
+        var_rolls = [r for r in rec["rolls"] if r["type"] == "var"]
+        self.assertEqual(len(var_rolls), 1)
+        self.assertEqual(var_rolls[0]["source"], "choice")
+
+    def test_unknown_choice_preserved_and_warned(self):
+        rec = pb.resolve_prompt(state(["%missing%"]), 0)
+        self.assertEqual(rec["output"], "%missing%")
+        self.assertTrue(any("missing" in w for w in rec["warnings"]))
+
+    def test_value_can_nest_tokens(self):
+        # a choice value may itself contain wildcards, re-resolved after injection
+        ch = choice("mood", [("M", "{1::calm|0::wild}")], selected="o0")
+        self.assertEqual(out(["%mood%"], choices=[ch]), "calm")
+
+    def test_empty_options_injects_blank(self):
+        ch = choice("empty", [], selected=None)
+        self.assertEqual(out(["x %empty% y"], choices=[ch]), "x  y")
+
+    def test_bare_percent_is_literal(self):
+        # % that doesn't form %name% is passed through untouched
+        self.assertEqual(out(["50% off, 100% silk"]), "50% off, 100% silk")
+        self.assertEqual(out(["%notclosed and %x"]), "%notclosed and %x")
+
+    def test_selected_by_id_survives_reorder(self):
+        # selection keys on option id, so it's stable if options are reordered
+        ch = choice("s", [("A", "alpha"), ("B", "beta")], selected="o1")
+        ch["options"] = list(reversed(ch["options"]))  # now [o1(beta), o0(alpha)]
+        self.assertEqual(out(["%s%"], choices=[ch]), "beta")
 
 
 if __name__ == "__main__":

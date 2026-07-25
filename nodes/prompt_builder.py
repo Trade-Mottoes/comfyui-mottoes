@@ -13,6 +13,8 @@ Grammar (resolved at build time):
     {a|b|c}     weighted random choice, pick one   (weights: {3::a|2::b|c})
     [a|b|c]     array, sequential by index
     __name__    wildcard file/list, pick like {…}
+    %name%      choice variable — a curated label→value picked in the editor;
+                one value per build, reused across every reference
 
 Tokens nest ({red|{light|dark} blue}); the chosen branch is re-resolved.
 Each token is salted by (section, raw text, occurrence) so identical tokens
@@ -33,6 +35,7 @@ from typing import Any
 
 _WILDCARD_RE = re.compile(r"__([A-Za-z0-9_./-]+)__")
 _WEIGHT_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)::(.*)$", re.DOTALL)
+_CHOICE_RE = re.compile(r"%([A-Za-z0-9_]+)%")
 _OPENERS = "{["
 _CLOSERS = "}]"
 _MATCH = {"}": "{", "]": "["}
@@ -187,6 +190,16 @@ def _resolve_template(text: str, ctx: dict, section_id: str) -> tuple[str, list]
             else:
                 out.append(c)
                 i += 1
+        elif c == "%":
+            m = _CHOICE_RE.match(text, i)
+            if m:
+                chosen, sub = _resolve_choice(m.group(1), m.group(0), ctx, section_id)
+                out.append(chosen)
+                rolls.extend(sub)
+                i = m.end()
+            else:
+                out.append(c)
+                i += 1
         else:
             out.append(c)
             i += 1
@@ -227,6 +240,38 @@ def _resolve_wildcard(name, raw, ctx, section_id):
     return resolved, [_roll(key, "wildcard", raw, resolved)] + sub
 
 
+def _choice_value(cdef: dict, ctx: dict) -> str:
+    """The value a single-select choice injects: the selected option's value,
+    falling back to the first option. Empty when the choice has no options."""
+    options = cdef.get("options") or []
+    if not options:
+        return ""
+    sel = cdef.get("selected")
+    for o in options:
+        if o.get("id") == sel:
+            return o.get("value", "") or ""
+    return options[0].get("value", "") or ""
+
+
+def _resolve_choice(name: str, raw: str, ctx: dict, section_id: str):
+    """Resolve a ``%name%`` choice variable.
+
+    Variable semantics: the value is computed once per build and reused for every
+    reference (unlike ``{…}``, which rolls independently per occurrence). The
+    injected value is itself re-resolved, so a choice value can contain nested
+    tokens. An undefined name is left verbatim with a warning.
+    """
+    cdef = ctx["choices"].get(name)
+    if cdef is None:
+        ctx["warnings"].append(f"unknown choice %{name}%")
+        return raw, [_roll(f"%{name}%", "var", raw, raw, source="missing")]
+    if name in ctx["choice_cache"]:
+        return ctx["choice_cache"][name], []
+    resolved, sub = _resolve_template(_choice_value(cdef, ctx), ctx, section_id)
+    ctx["choice_cache"][name] = resolved
+    return resolved, [_roll(f"%{name}%", "var", raw, resolved, source="choice")] + sub
+
+
 def _coerce_state(state: Any) -> dict:
     if isinstance(state, dict):
         return state
@@ -250,6 +295,8 @@ def resolve_prompt(state: Any, seed: int, wildcards: dict | None = None, now: in
         "pins": st.get("pins") or {},
         "counters": st.get("counters") or {},
         "wildcards": wildcards or {},
+        "choices": {c["name"]: c for c in (st.get("choices") or []) if isinstance(c, dict) and c.get("name")},
+        "choice_cache": {},
         "occ": {},
         "warnings": [],
     }
@@ -291,6 +338,7 @@ _DEFAULT_STATE = json.dumps(
         ],
         "pins": {},
         "counters": {},
+        "choices": [],
         "cache": None,
         "history": [],
     }

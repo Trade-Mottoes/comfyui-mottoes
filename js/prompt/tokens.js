@@ -8,6 +8,7 @@ const OPENERS = "{[";
 const CLOSERS = "}]";
 const MATCH = { "}": "{", "]": "[" };
 const WILDCARD = /^__([A-Za-z0-9_./-]+)__/;
+const VAR = /^%([A-Za-z0-9_]+)%/;   // %name% choice variable
 
 function findSpan(text, i) {
     const stack = [text[i]];
@@ -66,6 +67,18 @@ export function tokenize(text) {
                 buf += c;
                 i += 1;
             }
+        } else if (c === "%") {
+            const m = VAR.exec(text.slice(i));
+            if (m) {
+                flush(i);
+                segs.push({ type: "var", text: m[0], start: i, end: i + m[0].length });
+                bufStart = i + m[0].length;
+                i += m[0].length;
+            } else {
+                if (!buf) bufStart = i;
+                buf += c;
+                i += 1;
+            }
         } else {
             if (!buf) bufStart = i;
             buf += c;
@@ -82,11 +95,16 @@ const esc = (s) =>
 /** HTML for the highlight backdrop behind the textarea. Trailing newline keeps
  *  the backdrop's height in step with the textarea as the last line is edited.
  *  Pass the section id and pins to tint tokens that are pinned to a value. */
-export function highlightHtml(text, sectionId = "", pins = null) {
+export function highlightHtml(text, sectionId = "", pins = null, choiceNames = null) {
     const counts = {};
     const html = tokenize(text)
         .map((s) => {
             if (s.type === "text") return esc(s.text);
+            if (s.type === "var") {
+                // undefined choice name (or none defined yet) → error tint so typos show
+                const undef = choiceNames && !choiceNames.has(s.text.slice(1, -1));
+                return `<span class="tok ${undef ? "tok-error" : "tok-var"}">${esc(s.text)}</span>`;
+            }
             // occurrence counting mirrors tokenContextAt / Python's _next_key
             const occ = counts[s.text] ?? 0;
             counts[s.text] = occ + 1;

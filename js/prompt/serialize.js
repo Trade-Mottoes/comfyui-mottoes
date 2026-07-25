@@ -20,6 +20,31 @@ export function makeSection(init = {}) {
     };
 }
 
+/** One option of a choice: `label` shows in the menu, `value` is injected. */
+export function makeOption(init = {}) {
+    return {
+        id: init.id || uid("o"),
+        label: init.label ?? "",
+        value: init.value ?? "",
+    };
+}
+
+/** A choice variable, referenced as `%name%`. `selected` is an option id.
+ *  `mode` is "single" for now (random/multi reserved for later). */
+export function makeChoice(init = {}) {
+    const options =
+        Array.isArray(init.options) && init.options.length
+            ? init.options.map(makeOption)
+            : [makeOption()];
+    return {
+        id: init.id || uid("c"),
+        name: init.name ?? "",
+        mode: init.mode ?? "single",
+        options,
+        selected: init.selected ?? options[0]?.id ?? null,
+    };
+}
+
 export function defaultState() {
     return {
         version: 1,
@@ -27,6 +52,7 @@ export function defaultState() {
         sections: [makeSection()],
         pins: {},
         counters: {},
+        choices: [],
         cache: null,
         history: [],
     };
@@ -41,6 +67,7 @@ function normalize(o) {
             : st.sections;
     st.pins = o.pins && typeof o.pins === "object" ? o.pins : {};
     st.counters = o.counters && typeof o.counters === "object" ? o.counters : {};
+    st.choices = Array.isArray(o.choices) ? o.choices.map(makeChoice) : [];
     st.cache = o.cache || null;
     st.history = Array.isArray(o.history) ? o.history : [];
     return st;
@@ -75,6 +102,13 @@ export function toPlain(state) {
         })),
         pins: state.pins,
         counters: state.counters,
+        choices: state.choices.map((c) => ({
+            id: c.id,
+            name: c.name,
+            mode: c.mode,
+            options: c.options.map((o) => ({ id: o.id, label: o.label, value: o.value })),
+            selected: c.selected,
+        })),
         cache: state.cache,
         history: state.history,
     };

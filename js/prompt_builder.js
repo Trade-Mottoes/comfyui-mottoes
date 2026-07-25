@@ -1,26 +1,31 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import * as Vue from "./lib/vue.esm-browser.prod.js";
 
 // Node lifecycle for the Prompt Builder node.
 //
-// The prompt is composed from reorderable sections with seeded wildcards. The
-// sections are edited in a Vue app (js/prompt/editor.js); this module owns the
-// node lifecycle — the `state` DOM widget that serializes the model into the
-// workflow, the seed bridge, the live-preview route call, and sizing. Mirrors
-// the Metadata Resolver picker; unlike it, this node emits a STRING, so the
-// resolver lives in Python and runs at execution time (and backs the preview).
+// Two surfaces share ONE reactive model (serialized into the node's `state`
+// widget, so workflow round-trip is unchanged):
+//   • the node = a compact read-only VIEW (js/prompt/nodeview.js);
+//   • a full-screen DIALOG = the build/edit surface (js/prompt/editor.js),
+//     opened from the node. Moving editing off the node retires the whole class
+//     of node-surface problems (renderers, sizing, orphaned textareas).
+// Resolution happens in Python; the frontend only tokenizes for highlighting.
 
 import { mountEditor } from "./prompt/editor.js";
-import { serialize, deserialize, toPlain } from "./prompt/serialize.js";
+import { mountNodeView } from "./prompt/nodeview.js";
+import { serialize, deserialize, toPlain, applyState } from "./prompt/serialize.js";
+
+const { reactive } = Vue;
 
 const NODE = "Prompt Builder (Mottoes)";
 const STATE_WIDGET = "state";
 const STATE_WIDGET_TYPE = "prompt_state";   // our DOM widget, vs the auto textarea
 
-function contentHeight(node) {
+/** Height of the compact node view (grows a little with the output preview). */
+function nodeViewHeight(node) {
     const measured = node._pbEl?.scrollHeight;
-    if (measured > 0) return measured + 6;
-    return 360;
+    return measured > 0 ? measured + 6 : 108;
 }
 
 function resizeNode(node) {
@@ -82,9 +87,8 @@ function stripStateInput(node) {
 /** Detach the auto `state` widget's <textarea> element (and its `.dom-widget`
  *  wrapper). Under the legacy (non-Vue) renderer this element is created lazily
  *  on the node's first draw — AFTER onNodeCreated — so `widget.element` is still
- *  null when we splice, and the element is left orphaned over our editor: stale
- *  default JSON, still typeable. So call this again once the element exists.
- *  (Nodes 2.0 tears it down itself, so this is a no-op there.) */
+ *  null when we splice, and the element is left orphaned over our view. So call
+ *  this again once the element exists. (Nodes 2.0 tears it down itself.) */
 function detachOrphanState(widget) {
     try { widget?.onRemove?.(); } catch { /* ignore */ }
     const el = widget?.element;
@@ -114,33 +118,53 @@ function sweepAutoStateWidget(node) {
     if (dropAutoStateWidget(node)) resizeNode(node);
 }
 
-function setup(node) {
-    if (node._pbEl) return;
+// --------------------------------------------------------------------------- //
+// The full-screen editor dialog (opened from the node view)
+// --------------------------------------------------------------------------- //
 
-    // Take the auto-created text widget's value, then remove it: the DOM widget
-    // below serializes the model as `state` itself.
-    const initial = dropAutoStateWidget(node)?.value ?? "";
-
-    const container = document.createElement("div");
-    node._pbEl = container;
-
-    const { model, setState, unmount } = mountEditor({
-        container,
-        initialState: deserialize(initial),
+function openEditor(node) {
+    if (node._pbDialog) return;   // already open
+    const overlay = document.createElement("div");
+    document.body.appendChild(overlay);
+    const dialog = mountEditor({
+        container: overlay,
+        model: node._pbModel,
         getSeed: () => Number(seedWidget(node)?.value ?? 0),
         setSeed: (v) => {
             const w = seedWidget(node);
-            if (w) {
-                w.value = v;
-                w.callback?.(v);
-            }
+            if (w) { w.value = v; w.callback?.(v); }
         },
         build: (state, seed) => buildRoute(toPlain(state), seed),
-        onChange: () => resizeNode(node),
+        onChange: () => { node.graph?.setDirtyCanvas(true, false); resizeNode(node); },
+        onClose: () => closeEditor(node),
     });
+    node._pbDialog = { dialog, overlay };
+}
+
+function closeEditor(node) {
+    const d = node._pbDialog;
+    if (!d) return;
+    node._pbDialog = null;
+    try { d.dialog.unmount(); } catch { /* ignore */ }
+    try { d.overlay.remove(); } catch { /* ignore */ }
+}
+
+function setup(node) {
+    if (node._pbEl) return;
+
+    // Take the auto-created text widget's value, then remove it.
+    const initial = dropAutoStateWidget(node)?.value ?? "";
+
+    // One reactive model, shared by the node view and the editor dialog.
+    const model = reactive(deserialize(initial));
     node._pbModel = model;
-    node._pbSetState = setState;
-    node._pbUnmount = unmount;
+
+    const container = document.createElement("div");
+    node._pbEl = container;
+    node._pbView = mountNodeView({ container, model, openEditor: () => openEditor(node) });
+
+    // Rehydrate on load (belt-and-suspenders alongside the widget's setValue).
+    node._pbSetState = (s) => { applyState(model, s); resizeNode(node); };
 
     const domWidget = node.addDOMWidget(STATE_WIDGET, STATE_WIDGET_TYPE, container, {
         serialize: true,
@@ -148,11 +172,11 @@ function setup(node) {
         setValue: (v) => {
             const s = parsedState(v);
             if (s == null) return;   // e.g. control_after_generate's "randomize"
-            setState(deserialize(s));
+            applyState(model, deserialize(s));
             resizeNode(node);
         },
     });
-    domWidget.computeSize = (w) => [w, contentHeight(node)];
+    domWidget.computeSize = (w) => [w, nodeViewHeight(node)];
 
     resizeNode(node);
 }
@@ -170,6 +194,14 @@ app.registerExtension({
             stripStateInput(this);
         };
 
+        // Double-click the node → open the full editor.
+        const onDblClick = nodeType.prototype.onDblClick;
+        nodeType.prototype.onDblClick = function () {
+            const r = onDblClick?.apply(this, arguments);
+            openEditor(this);
+            return r;
+        };
+
         // On load: rebuild the model from the saved state (read from
         // widgets_values, robust to how the host routed the value).
         const onConfigure = nodeType.prototype.onConfigure;
@@ -179,20 +211,14 @@ app.registerExtension({
             sweepAutoStateWidget(this);
             if (!this._pbSetState) return;
             const saved = savedState(info?.widgets_values);
-            if (saved != null) {
-                this._pbSetState(deserialize(saved));
-                resizeNode(this);
-            }
+            if (saved != null) this._pbSetState(deserialize(saved));
         };
 
-        // Tear down the Vue app when the node is removed (the resolver omits this).
+        // Tear down both surfaces when the node is removed.
         const onRemoved = nodeType.prototype.onRemoved;
         nodeType.prototype.onRemoved = function () {
-            try {
-                this._pbUnmount?.();
-            } catch {
-                /* ignore */
-            }
+            try { closeEditor(this); } catch { /* ignore */ }
+            try { this._pbView?.unmount?.(); } catch { /* ignore */ }
             onRemoved?.apply(this, arguments);
         };
     },

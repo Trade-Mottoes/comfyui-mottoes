@@ -1,17 +1,19 @@
-// Vue editor for the Prompt Builder node.
+// Full-screen Vue editor for the Prompt Builder.
 //
 // A standalone Vue app (vendored full build — templates compile at runtime, no
-// build step) mounted into the node's DOM widget. The reactive model IS the
-// serialized node state (sections + settings + pins + cache + history); the
-// entry (../prompt_builder.js) owns the DOM widget, the seed bridge, and the
-// build-route call, and passes them in. Resolution happens in Python — the
-// frontend only tokenizes for highlighting and renders the resolved record.
+// build step) mounted into a body overlay as a full-page dialog. The reactive
+// model is OWNED by the entry (../prompt_builder.js) and shared with the node
+// view, so edits here update the node live; it IS the serialized node state
+// (sections + settings + pins + choices + cache + history). The entry passes the
+// model in plus the seed bridge and the build-route call. Two-pane layout:
+// compose on the left, a live (debounced) preview on the right. Resolution
+// happens in Python — the frontend only tokenizes for highlighting.
 
 import * as Vue from "../lib/vue.esm-browser.prod.js";
-import { makeSection, makeChoice, makeOption } from "./serialize.js";
+import { makeSection, makeChoice, makeOption, serialize, deserialize, applyState } from "./serialize.js";
 import { tokenize, highlightHtml, tokenContextAt, splitTopLevel, parseOption, buildTokenString } from "./tokens.js";
 
-const { createApp, reactive, ref, nextTick } = Vue;
+const { createApp, reactive, ref, computed, watch, onMounted, onBeforeUnmount, nextTick } = Vue;
 
 const GROW_CAP = 340;
 const OPT_GROW_CAP = 150;   // option rows in the token dialog stay compact
@@ -249,37 +251,75 @@ function injectStyles() {
             border:1px solid var(--border-color,#444); border-radius:4px; }
         .pb-knob .pb-kmulti:hover, .pb-knob .pb-krand:hover { border-color:var(--p-primary-color,#4a90d9); }
         .pb-knob .pb-krand { color:#e0729e; }
+
+        /* ---- full-screen dialog shell ---- */
+        .pb-editor.pb-fs { position:fixed; inset:0; z-index:9000; padding:0; gap:0;
+            background:var(--comfy-menu-bg,#1e1e1e); }
+        .pb-fs-top { display:flex; align-items:center; gap:6px; flex:0 0 auto;
+            padding:8px 10px; border-bottom:1px solid var(--border-color,#444); }
+        .pb-fs-top .pb-fs-title { font-weight:600; font-size:13px; margin-right:2px; white-space:nowrap; }
+        .pb-fs-top .pb-grow { flex:1 1 0; }
+        .pb-fs-top .pb-fs-seed { font-size:11px; color:var(--descrip-text,#888); white-space:nowrap; }
+        .pb-fs-top button.active { border-color:var(--p-primary-color,#4a90d9); color:var(--p-primary-color,#4a90d9); }
+        .pb-fs-top .pb-mode { font-weight:600; }
+        .pb-fs-top .pb-mode.locked { border-color:var(--p-primary-color,#4a90d9); color:var(--p-primary-color,#4a90d9); }
+        .pb-fs-top .pb-joiner { flex:0 0 96px; }
+        .pb-fs-close { flex:0 0 30px; padding:0; }
+        .pb-fs-history { margin:6px 10px 0; flex:0 0 auto; max-height:180px; }
+
+        .pb-fs-body { flex:1 1 0; min-height:0; display:flex; }
+        .pb-fs-left, .pb-fs-right { min-width:0; overflow-y:auto; padding:10px;
+            display:flex; flex-direction:column; gap:6px; box-sizing:border-box; }
+        .pb-fs-left { flex:1 1 56%; border-right:1px solid var(--border-color,#444); }
+        .pb-fs-right { flex:1 1 44%; }
+        .pb-fs-right .pb-phead { flex:0 0 auto; }
+        .pb-fs-right .pb-out { flex:0 0 auto; font-size:13px; cursor:copy; }
+        .pb-fs-right .pb-empty { flex:0 0 auto; }
+
+        /* ---- JSON view/edit (replaces the compose pane) ---- */
+        .pb-fs-left.pb-json { padding:10px; }
+        .pb-json-ta { flex:1 1 0; min-height:0; width:100%; box-sizing:border-box; resize:none;
+            font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px; line-height:1.45;
+            background:var(--comfy-input-bg,#222); color:var(--input-text,#ddd);
+            border:1px solid var(--border-color,#444); border-radius:4px; padding:8px; }
+        .pb-json-foot { display:flex; align-items:center; gap:8px; flex:0 0 auto; }
+        .pb-json-foot .pb-grow { flex:1 1 0; }
     `;
     document.head.appendChild(style);
 }
 
 const TEMPLATE = `
-<div class="pb-editor" ref="rootEl">
-  <div class="pb-toolbar">
+<div class="pb-editor pb-fs" ref="rootEl">
+  <div class="pb-fs-top">
+    <span class="pb-fs-title">Prompt Builder</span>
     <button class="pb-mode" :class="{locked: model.settings.mode==='locked'}" @click="toggleMode"
             :title="model.settings.mode==='locked' ? 'Locked: runs reuse the last Build' : 'Reroll: wildcards re-roll from the seed each run'">
       {{ model.settings.mode==='locked' ? '🔒 Locked' : '🎲 Reroll' }}
     </button>
-    <button @click="doBuild" :disabled="busy" title="Resolve now, cache it, and log to history">Build</button>
-    <button @click="doPreview" :disabled="busy" title="Resolve at the current seed — no changes">Preview</button>
-    <button class="pb-icon" @click="reseed" :disabled="busy" title="New random seed + preview">🎲</button>
-    <button @click="historyOpen=!historyOpen" :disabled="!model.history.length"
-            :title="model.history.length + ' builds'">History</button>
+    <button class="pb-build" @click="doBuild" :disabled="busy" title="Resolve now, cache it, and log to history">Build</button>
+    <button class="pb-icon" @click="reseed" :disabled="busy" title="New random seed">🎲</button>
+    <span class="pb-fs-seed" title="Current seed">#{{ seedVal }}</span>
     <select class="pb-joiner" :value="model.settings.joiner" @change="setJoiner($event.target.value)" title="How sections join">
       <option v-for="j in JOIN_OPTS" :key="j.t" :value="j.v">{{ j.t }}</option>
     </select>
+    <button @click="historyOpen=!historyOpen" :disabled="!model.history.length" :title="model.history.length + ' builds'">History ▾</button>
+    <span class="pb-grow"></span>
+    <button :class="{active: jsonOpen}" @click="toggleJson" title="View / edit the raw state as JSON">{ } JSON</button>
+    <button @click="saveFile" title="Download this prompt as a .json file">Save</button>
+    <button @click="loadFile" title="Load a prompt from a .json file">Load</button>
+    <button class="pb-fs-close" @click="close" title="Close editor (Esc)">✕</button>
   </div>
 
-  <div v-if="model.settings.mode==='locked'" class="pb-hint">Locked — runs reuse the last Build. Hit Build to refresh.</div>
-  <div v-if="error" class="pb-error">{{ error }}</div>
-
-  <div v-if="historyOpen" class="pb-history">
+  <div v-if="historyOpen" class="pb-history pb-fs-history">
     <div v-for="(h,hi) in model.history" :key="hi" class="pb-hitem" @click="restore(h)" :title="'Restore — ' + h.output">
       <span class="pb-hout">{{ h.output || '(empty)' }}</span>
       <span class="pb-hseed">#{{ h.seed }}</span>
     </div>
     <div v-if="!model.history.length" class="pb-empty">No builds yet</div>
   </div>
+
+  <div class="pb-fs-body">
+    <div class="pb-fs-left" v-if="!jsonOpen">
 
   <div class="pb-knobs">
     <div v-for="c in model.choices" :key="c.id" class="pb-knob">
@@ -322,6 +362,39 @@ const TEMPLATE = `
   </div>
 
   <div class="pb-toolbar pb-add"><button @click="addSection">+ Add section</button></div>
+    </div>
+
+    <div class="pb-fs-left pb-json" v-else>
+      <textarea class="pb-json-ta" v-model="jsonText" spellcheck="false"></textarea>
+      <div class="pb-json-foot">
+        <span v-if="jsonError" class="pb-error">{{ jsonError }}</span>
+        <span class="pb-grow"></span>
+        <button @click="revertJson">Revert</button>
+        <button @click="applyJson" title="Parse and apply the JSON">Apply</button>
+      </div>
+    </div>
+
+    <div class="pb-fs-right">
+      <div class="pb-phead">
+        <span>Preview</span>
+        <span class="pb-seed" v-if="preview">· seed #{{ preview.seed }}</span>
+        <span v-if="busy" class="pb-dsub">· resolving…</span>
+        <span class="pb-grow"></span>
+        <button class="pb-icon" @click="copyOut" :disabled="!preview" title="Copy prompt">⧉</button>
+      </div>
+      <div v-if="error" class="pb-error">{{ error }}</div>
+      <div v-if="preview" class="pb-out" @click="copyOut">{{ preview.output || '(empty)' }}</div>
+      <div v-else class="pb-empty">Edit on the left — the resolved prompt appears here live.</div>
+      <div v-if="preview && preview.warnings && preview.warnings.length" class="pb-warn">⚠ {{ preview.warnings.join(' · ') }}</div>
+      <div v-if="preview && preview.rolls && preview.rolls.length" class="pb-rolls">
+        <div v-for="(r,ri) in preview.rolls" :key="ri" class="pb-roll">
+          <span class="tok" :class="['tok-'+r.type, {'tok-pinned': r.source==='pin'}]">{{ r.raw }}</span>
+          <span class="pb-arrow">{{ r.source==='pin' ? '📌' : '→' }}</span>
+          <span class="pb-chosen">{{ r.chosen }}</span>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <teleport to="body">
     <div v-if="popup.open" class="pb-overlay" @click.self="closeTokenEditor(true)">
@@ -403,24 +476,6 @@ const TEMPLATE = `
     </div>
   </teleport>
 
-  <div v-if="previewOpen && preview" class="pb-preview">
-    <div class="pb-phead">
-      <span>Resolved</span>
-      <span class="pb-seed">seed #{{ preview.seed }}</span>
-      <span class="pb-grow"></span>
-      <button class="pb-icon" @click="copyOut" title="Copy prompt">⧉</button>
-      <button class="pb-icon" @click="previewOpen=false" title="Hide">✕</button>
-    </div>
-    <div class="pb-out" @click="copyOut">{{ preview.output || '(empty)' }}</div>
-    <div v-if="preview.warnings && preview.warnings.length" class="pb-warn">⚠ {{ preview.warnings.join(' · ') }}</div>
-    <div v-if="preview.rolls && preview.rolls.length" class="pb-rolls">
-      <div v-for="(r,ri) in preview.rolls" :key="ri" class="pb-roll">
-        <span class="tok" :class="['tok-'+r.type, {'tok-pinned': r.source==='pin'}]">{{ r.raw }}</span>
-        <span class="pb-arrow">{{ r.source==='pin' ? '📌' : '→' }}</span>
-        <span class="pb-chosen">{{ r.chosen }}</span>
-      </div>
-    </div>
-  </div>
 </div>
 `;
 
@@ -432,10 +487,8 @@ const TEMPLATE = `
  * Returns the reactive model plus setState (replaces it in place, so the entry's
  * reference stays live for serialization).
  */
-export function mountEditor({ container, initialState, getSeed, setSeed, build, onChange }) {
+export function mountEditor({ container, model, getSeed, setSeed, build, onChange, onClose }) {
     injectStyles();
-    const changed = () => onChange?.();
-    const model = reactive(initialState);
 
     const app = createApp({
         setup() {
@@ -447,6 +500,16 @@ export function mountEditor({ container, initialState, getSeed, setSeed, build, 
             const historyOpen = ref(false);
             const dragFrom = ref(-1);
             const dropAt = ref(-1);
+            const jsonOpen = ref(false);
+            const jsonText = ref("");
+            const jsonError = ref("");
+            const seedVal = ref(getSeed?.() ?? 0);
+
+            // Real-time preview: any model change schedules a debounced resolve.
+            let previewTimer = null;
+            const schedulePreview = () => { clearTimeout(previewTimer); previewTimer = setTimeout(() => run(false), 300); };
+            const changed = () => { onChange?.(); schedulePreview(); };
+            const close = () => onClose?.();
 
             // NB: wrap the call — a bare .forEach(autoGrow) would pass the array
             // index as `cap` and collapse every textarea.
@@ -508,6 +571,7 @@ export function mountEditor({ container, initialState, getSeed, setSeed, build, 
                 busy.value = true; error.value = "";
                 try {
                     const seed = getSeed?.() ?? 0;
+                    seedVal.value = seed;
                     const record = await build(model, seed);
                     preview.value = record; previewOpen.value = true;
                     if (commit) {
@@ -804,6 +868,59 @@ export function mountEditor({ container, initialState, getSeed, setSeed, build, 
             };
             const onCOptDragEnd = () => { cOptDragFrom.value = -1; cOptDropAt.value = -1; };
 
+            // ---- JSON view / edit (snapshot on open; apply parses + replaces) ----
+            const openJson = () => { jsonText.value = serialize(model); jsonError.value = ""; jsonOpen.value = true; };
+            const toggleJson = () => (jsonOpen.value ? (jsonOpen.value = false) : openJson());
+            const revertJson = () => { jsonText.value = serialize(model); jsonError.value = ""; };
+            const applyJson = () => {
+                try { JSON.parse(jsonText.value); }
+                catch (e) { jsonError.value = "Invalid JSON: " + (e?.message ?? e); return; }
+                applyState(model, deserialize(jsonText.value));
+                jsonError.value = ""; jsonOpen.value = false;
+                changed(); growAll();
+            };
+
+            // ---- save / load the whole state to a .json file ----
+            const saveFile = () => {
+                const blob = new Blob([serialize(model)], { type: "application/json" });
+                const a = document.createElement("a");
+                a.href = URL.createObjectURL(blob); a.download = "prompt-builder.json";
+                a.click(); URL.revokeObjectURL(a.href);
+            };
+            const loadFile = () => {
+                const inp = document.createElement("input");
+                inp.type = "file"; inp.accept = "application/json,.json";
+                inp.onchange = () => {
+                    const f = inp.files?.[0]; if (!f) return;
+                    const r = new FileReader();
+                    r.onload = () => {
+                        try { applyState(model, deserialize(String(r.result))); error.value = ""; changed(); growAll(); }
+                        catch (e) { error.value = "Load failed: " + (e?.message ?? e); }
+                    };
+                    r.readAsText(f);
+                };
+                inp.click();
+            };
+
+            // ---- live preview (debounced on any change) + Esc handling ----
+            const onDocKeydown = (e) => {
+                if (e.key !== "Escape") return;
+                if (popup.open) { closeTokenEditor(true); return; }
+                if (choiceDlg.open) { closeChoiceEditor(true); return; }
+                if (jsonOpen.value) { jsonOpen.value = false; return; }
+                close();
+            };
+            watch(model, schedulePreview, { deep: true });
+            onMounted(() => {
+                document.addEventListener("keydown", onDocKeydown, true);
+                run(false);   // first preview on open
+                growAll();
+            });
+            onBeforeUnmount(() => {
+                clearTimeout(previewTimer);
+                document.removeEventListener("keydown", onDocKeydown, true);
+            });
+
             return {
                 model, rootEl, busy, error, preview, previewOpen, historyOpen,
                 highlight, onScroll: syncScroll, setPopupType, JOIN_OPTS, MULTI_JOIN_OPTS,
@@ -818,6 +935,8 @@ export function mountEditor({ container, initialState, getSeed, setSeed, build, 
                 choiceDlg, sanitizeName, modeHint, setDlgMode, setDlgSingle, toggleDlgMulti,
                 addChoiceOption, removeChoiceOption, closeChoiceEditor,
                 cOptRowClass, onCOptDragStart, onCOptDragOver, onCOptDrop, onCOptDragEnd,
+                jsonOpen, jsonText, jsonError, seedVal,
+                close, toggleJson, applyJson, revertJson, saveFile, loadFile,
             };
         },
         template: TEMPLATE,
@@ -827,14 +946,5 @@ export function mountEditor({ container, initialState, getSeed, setSeed, build, 
     app.directive("pbgrowopt", { mounted: (el) => autoGrow(el, OPT_GROW_CAP), updated: (el) => autoGrow(el, OPT_GROW_CAP) });
     app.mount(container);
 
-    const setState = (s) => {
-        model.settings = s.settings;
-        model.sections.splice(0, model.sections.length, ...s.sections);
-        model.pins = s.pins; model.counters = s.counters;
-        model.choices = s.choices || [];
-        model.cache = s.cache; model.history = s.history;
-        nextTick(() => container.querySelectorAll("textarea.pb-ta").forEach((el) => autoGrow(el)));
-    };
-
-    return { app, model, setState, unmount: () => app.unmount() };
+    return { app, unmount: () => app.unmount() };
 }

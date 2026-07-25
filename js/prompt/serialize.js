@@ -126,3 +126,17 @@ export function toPlain(state) {
 export function serialize(state) {
     return JSON.stringify(toPlain(state), null, 2);
 }
+
+/** Replace a reactive model's contents in place from a (deserialized) state, so
+ *  every surface bound to that model updates and the entry's reference stays live
+ *  for serialization. Both the node-view and the full editor share one model. */
+export function applyState(model, s) {
+    model.version = s.version ?? 1;
+    model.settings = s.settings;
+    model.sections.splice(0, model.sections.length, ...s.sections);
+    model.pins = s.pins;
+    model.counters = s.counters;
+    model.choices = s.choices || [];
+    model.cache = s.cache;
+    model.history = s.history;
+}

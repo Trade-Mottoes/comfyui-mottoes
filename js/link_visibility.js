@@ -1,33 +1,38 @@
 import { app } from "../../scripts/app.js";
 
-// Toggle graph link visibility with a hotkey.
+// Toggle graph link visibility with a hotkey (Ctrl+Shift+L).
 //
-// IMPORTANT: this does NOT register a ComfyUI command/keybinding. ComfyUI's own
-// key handler (a) matches by event.key — the character — which breaks on macOS
-// (Option+L emits "¬", Shift upper-cases), and (b) GRABS a bound combo before an
-// extension listener sees it. So any shortcut you set for this in Settings →
-// Keybindings actively sabotages it. We own the key ourselves, keyed on
-// event.code (the physical key), exactly like the bookmark combos that work.
+// We own the key ourselves — an event.code capture-phase listener — rather than
+// a ComfyUI command/keybinding: ComfyUI matches by event.key (breaks on macOS,
+// where Option+L is "¬") AND grabs any bound combo before an extension sees it.
+// event.code ("KeyL") is layout/Option/Shift-proof, the same trick the bookmark
+// combos use.
 //
-// Comfy.LinkRenderMode: 0=Straight 1=Linear 2=Spline 3=Hidden. We remember the
-// active visible style, flip to Hidden, and flip back.
+// Comfy.LinkRenderMode option values: Straight 0, Linear 1, Spline 2,
+// Hidden -1 (LiteGraph.HIDDEN_LINK) — NOT 3. We remember the active visible
+// style and flip to/from Hidden.
 
 const SETTING = "Comfy.LinkRenderMode";
-const HIDDEN = 3;
-let lastVisible = 2; // spline; overwritten with the active style each time we hide
+const VISIBLE_MODES = new Set([0, 1, 2]);
+let lastVisible = 2; // spline
 
-// Physical-key combo. Change here to rebind. `code` is layout/Option/Shift-proof.
 const COMBO = { code: "KeyL", ctrl: true, shift: true, alt: false, meta: false };
+
+const hiddenValue = () =>
+    typeof LiteGraph !== "undefined" && LiteGraph.HIDDEN_LINK != null ? LiteGraph.HIDDEN_LINK : -1;
 
 function toggleLinks() {
     const setting = app.extensionManager.setting;
+    const hidden = hiddenValue();
     const current = setting.get(SETTING);
-    if (current === HIDDEN) {
-        setting.set(SETTING, lastVisible);
+    if (current === hidden) {
+        setting.set(SETTING, VISIBLE_MODES.has(lastVisible) ? lastVisible : 2);
     } else {
-        lastVisible = current; // remember Straight/Linear/Spline, whatever is on
-        setting.set(SETTING, HIDDEN);
+        if (VISIBLE_MODES.has(current)) lastVisible = current;
+        setting.set(SETTING, hidden);
     }
+    app.canvas?.setDirty(true, true); // force the canvas to redraw with the new mode
+    console.info(`[Mottoes] links ${setting.get(SETTING) === hidden ? "hidden" : "shown"}`);
 }
 
 function comboMatches(e) {
@@ -50,9 +55,8 @@ function onKeydown(e) {
     }
 }
 
-// Earlier builds registered a command; if any ComfyUI keybinding was saved for it,
-// ComfyUI will keep grabbing that combo. Strip those stored bindings so the key
-// reaches us cleanly. (Safe no-op once there are none.)
+// Earlier builds registered a command; strip any ComfyUI keybinding saved for it
+// so ComfyUI doesn't keep grabbing the combo before our listener.
 function stripStaleBindings() {
     const setting = app.extensionManager.setting;
     const CMD = "mottoes.links.toggle";
@@ -73,6 +77,5 @@ app.registerExtension({
     setup() {
         stripStaleBindings();
         window.addEventListener("keydown", onKeydown, true); // capture phase
-        console.info("[Mottoes] Link visibility ready — Ctrl+Shift+L toggles graph links");
     },
 });

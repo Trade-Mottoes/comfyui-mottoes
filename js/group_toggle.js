@@ -13,12 +13,12 @@ import { app } from "../../scripts/app.js";
 // `properties`, which serialize with the workflow for free and show up in the
 // node's properties panel. Nothing is sent to Python — the nodes never execute.
 
-import { mountEditor, DEFAULTS } from "./groups/editor.js";
+import { mountEditor, DEFAULTS, withDefaults } from "./groups/editor.js";
 import { subscribe, NODES } from "./groups/service.js";
 
 const STATE_WIDGET = "groups";
 const STATE_WIDGET_TYPE = "mottoes_groups";
-const MIN_WIDTH = 240;
+const MIN_WIDTH = 260; // room for a title plus the jump/remove buttons
 
 /** Height of the editor's own content.
  *
@@ -56,19 +56,20 @@ function resizeNode(node, passes = 3) {
     });
 }
 
-/** The persisted settings, read off the node's properties. */
+/** The persisted settings, read off the node's properties (defaults filled in,
+ *  unknown properties — LiteGraph adds its own — dropped). */
 function readSettings(node) {
-    const props = node.properties ?? {};
-    const out = {};
-    for (const key of Object.keys(DEFAULTS)) {
-        if (props[key] !== undefined) out[key] = props[key];
-    }
-    return out;
+    return withDefaults(node.properties);
 }
 
 function writeSettings(node, settings) {
     node.properties = node.properties ?? {};
-    for (const key of Object.keys(DEFAULTS)) node.properties[key] = settings[key];
+    // Copy arrays out: `properties` is serialized and restored independently, so
+    // it must not share `hidden` with the editor's live settings object.
+    for (const key of Object.keys(DEFAULTS)) {
+        const value = settings[key];
+        node.properties[key] = Array.isArray(value) ? [...value] : value;
+    }
 }
 
 function setup(node, { modeOff, offVerb }) {
@@ -92,7 +93,7 @@ function setup(node, { modeOff, offVerb }) {
 
     // Seed the properties so they show up in the node's properties panel even
     // before anything is changed.
-    writeSettings(node, { ...DEFAULTS, ...readSettings(node) });
+    writeSettings(node, readSettings(node));
 
     const domWidget = node.addDOMWidget(STATE_WIDGET, STATE_WIDGET_TYPE, container, {
         serialize: false, // the graph is the state — nothing to round-trip

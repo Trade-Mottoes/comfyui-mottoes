@@ -21,7 +21,20 @@ export const DEFAULTS = {
     filter: "",             // title match; /re/flags for a regular expression
     restriction: "none",    // "none" | "max-one" | "always-one"
     showNav: true,
+    showRemove: true,
+    hidden: [],             // group ids this node leaves out — see `hiddenSet`
 };
+
+/** A complete settings object from a partial one: unknown keys dropped, arrays
+ *  copied so no two nodes ever share the same `hidden` list. */
+export function withDefaults(partial) {
+    const out = { ...DEFAULTS, hidden: [] };
+    for (const [key, value] of Object.entries(partial ?? {})) {
+        if (!(key in DEFAULTS)) continue;
+        out[key] = Array.isArray(value) ? [...value] : value;
+    }
+    return out;
+}
 
 function injectStyles() {
     if (document.getElementById("mottoes-groups-css")) return;
@@ -46,8 +59,12 @@ function injectStyles() {
         .mgt-head { display:flex; align-items:center; gap:5px; padding:0 5px 2px; }
         .mgt-head .mgt-count { flex:1 1 0; font-weight:600; color:var(--descrip-text,#aaa);
             text-transform:uppercase; letter-spacing:0.03em; font-size:10px; }
-        .mgt-icon { flex:0 0 22px; padding:0; height:18px; line-height:1; font-size:12px; }
+        .mgt-icon { flex:0 0 22px; padding:0; height:18px; line-height:1; font-size:12px; position:relative; }
         .mgt-icon.on { border-color:var(--p-primary-color,#4a90d9); color:var(--p-primary-color,#4a90d9); }
+        /* a dot on the gear when groups are left out — otherwise the only clue
+           that the list is a subset is buried in the panel */
+        .mgt-icon.flag::after { content:''; position:absolute; top:1px; right:1px; width:4px; height:4px;
+            border-radius:50%; background:var(--p-primary-color,#4a90d9); }
 
         .mgt-filter { width:100%; }
 
@@ -60,6 +77,15 @@ function injectStyles() {
         .mgt-set select { flex:0 0 130px; }
         .mgt-set input[type=checkbox] { flex:0 0 auto; width:14px; height:14px; padding:0;
             accent-color:var(--p-primary-color,#4a90d9); cursor:pointer; }
+        .mgt-set .mgt-showall { flex:0 0 auto; height:20px; font-size:11px; padding:0 8px; }
+
+        /* put-back chips for the groups this node is leaving out */
+        .mgt-chips { display:flex; flex-wrap:wrap; gap:4px; }
+        .mgt-editor .mgt-chip { max-width:100%; height:20px; padding:0 7px; font-size:11px;
+            border-radius:10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+            color:var(--descrip-text,#aaa); }
+        .mgt-editor .mgt-chip:hover { color:var(--p-primary-color,#4a90d9); }
+        .mgt-sep { border-top:1px solid var(--border-color,#444); margin:2px 0; }
 
         /* rows */
         .mgt-rows { display:flex; flex-direction:column; gap:4px; }
@@ -76,6 +102,8 @@ function injectStyles() {
         .mgt-editor .mgt-name:hover:not(:disabled) { color:var(--p-primary-color,#4a90d9); }
         .mgt-tag { flex:0 0 auto; color:var(--descrip-text,#888); font-size:10px; font-style:italic; }
         .mgt-nav { flex:0 0 22px; padding:0; line-height:1; }
+        .mgt-drop { flex:0 0 20px; padding:0; line-height:1; color:var(--descrip-text,#888); }
+        .mgt-drop:hover { border-color:var(--error-text,#c0504d); color:var(--error-text,#c0504d); }
 
         /* toggle switch — the .mgt-editor prefix lets height/radius beat the base button rule */
         .mgt-editor .mgt-tog { flex:0 0 34px; height:16px; border-radius:8px; position:relative; padding:0;
@@ -100,8 +128,9 @@ const TEMPLATE = `
     <span class="mgt-count">{{ onCount }} / {{ actionable.length }} on</span>
     <button class="mgt-icon" :class="{on: ui.filtering}" @click="toggleFilter"
             title="Filter groups by title">⌕</button>
-    <button class="mgt-icon" :class="{on: ui.settings}" @click="ui.settings = !ui.settings"
-            title="Settings">⚙</button>
+    <button class="mgt-icon" :class="{on: ui.settings, flag: hiddenRows.length}"
+            @click="ui.settings = !ui.settings"
+            :title="hiddenRows.length ? 'Settings — ' + hiddenRows.length + ' group(s) left out' : 'Settings'">⚙</button>
   </div>
 
   <input v-if="ui.filtering" ref="filterInput" class="mgt-filter" :value="settings.filter"
@@ -129,6 +158,24 @@ const TEMPLATE = `
       <span>Jump buttons</span>
       <input type="checkbox" :checked="settings.showNav" @change="set('showNav', $event.target.checked)" />
     </label>
+    <label class="mgt-set">
+      <span>Remove buttons</span>
+      <input type="checkbox" :checked="settings.showRemove"
+             @change="set('showRemove', $event.target.checked)"
+             title="Show an ✕ on each row to drop that group from this node's list" />
+    </label>
+
+    <template v-if="hiddenRows.length">
+      <div class="mgt-sep"></div>
+      <div class="mgt-set">
+        <span>Left out ({{ hiddenRows.length }})</span>
+        <button class="mgt-showall" @click="showAll">Show all</button>
+      </div>
+      <div class="mgt-chips">
+        <button v-for="g in hiddenRows" :key="g.id" class="mgt-chip" @click="restore(g.id)"
+                :title="'Put ' + g.title + ' back in the list'">＋ {{ g.title }}</button>
+      </div>
+    </template>
   </div>
 
   <div class="mgt-rows">
@@ -141,11 +188,16 @@ const TEMPLATE = `
       <span v-if="!g.total" class="mgt-tag">empty</span>
       <button v-if="settings.showNav" class="mgt-nav" @click.stop="nav(g)"
               title="Jump the canvas to this group">➜</button>
+      <button v-if="settings.showRemove" class="mgt-drop" @click.stop="drop(g)"
+              title="Leave this group out of this node's list (the group itself is untouched)">✕</button>
     </div>
   </div>
 
   <div v-if="!model.groups.length" class="mgt-empty">
     No groups here yet.<br/>Select some nodes and press Ctrl+G to make one.
+  </div>
+  <div v-else-if="!visible.length && allLeftOut" class="mgt-empty">
+    Every group is left out.<br/>Open ⚙ to put some back.
   </div>
   <div v-else-if="!visible.length" class="mgt-empty">No groups match the filter.</div>
 </div>
@@ -180,7 +232,7 @@ function matcher(filter) {
 export function mountEditor({ container, modeOff, offVerb = "mute", settings: initial, onSettings, onLayout }) {
     injectStyles();
     const model = reactive({ groups: [] });
-    const settings = reactive({ ...DEFAULTS, ...(initial ?? {}) });
+    const settings = reactive(withDefaults(initial));
     // Which panels are open. Not persisted — except that a saved filter reopens
     // its box, so a node never comes back with a hidden filter silently applied.
     const ui = reactive({ filtering: !!settings.filter, settings: false });
@@ -191,9 +243,17 @@ export function mountEditor({ container, modeOff, offVerb = "mute", settings: in
             const offVerbCap = offVerb.charAt(0).toUpperCase() + offVerb.slice(1);
 
             // ---- derived ----
+            // Ids are compared as strings: they come back off a saved workflow as
+            // whatever JSON made of them, and a number/string mismatch would
+            // silently un-hide everything on reload.
+            const hiddenSet = computed(() => new Set(settings.hidden.map(String)));
+            const listed = computed(() => model.groups.filter((g) => !hiddenSet.value.has(String(g.id))));
+            const hiddenRows = computed(() => model.groups.filter((g) => hiddenSet.value.has(String(g.id))));
+            const allLeftOut = computed(() => model.groups.length > 0 && !listed.value.length);
+
             const visible = computed(() => {
                 const match = matcher(settings.filter);
-                const rows = match ? model.groups.filter((g) => match(g.title)) : [...model.groups];
+                const rows = match ? listed.value.filter((g) => match(g.title)) : [...listed.value];
                 if (settings.sort === "alpha") {
                     rows.sort((a, b) => a.title.localeCompare(b.title));
                 } else {
@@ -225,7 +285,7 @@ export function mountEditor({ container, modeOff, offVerb = "mute", settings: in
             // ---- settings ----
             const set = (key, value) => {
                 settings[key] = value;
-                onSettings?.({ ...settings });
+                onSettings?.(withDefaults(settings));
             };
             const toggleFilter = () => {
                 ui.filtering = !ui.filtering;
@@ -236,6 +296,15 @@ export function mountEditor({ container, modeOff, offVerb = "mute", settings: in
                 if (settings.filter) set("filter", "");
                 else ui.filtering = false;
             };
+
+            // ---- which groups this node lists ----
+            // Bound by group id, so renaming or recolouring a left-out group keeps
+            // it left out. Always replace the array rather than mutating it — the
+            // settings are handed out by copy.
+            const drop = (row) => set("hidden", [...settings.hidden, row.id]);
+            const restore = (id) =>
+                set("hidden", settings.hidden.filter((h) => String(h) !== String(id)));
+            const showAll = () => set("hidden", []);
 
             // ---- switching ----
             // The restriction ("at most one" / "exactly one") is applied over the
@@ -272,14 +341,15 @@ export function mountEditor({ container, modeOff, offVerb = "mute", settings: in
 
             // Anything that adds or removes a line re-measures the node.
             watch(
-                () => [visible.value.length, ui.filtering, ui.settings].join(":"),
+                () => [visible.value.length, hiddenRows.value.length, ui.filtering, ui.settings].join(":"),
                 () => nextTick(() => onLayout?.()),
             );
 
             return {
                 model, settings, ui, visible, actionable, onCount, allState, allClass,
-                filterInput, offVerbCap,
+                hiddenRows, allLeftOut, filterInput, offVerbCap,
                 set, toggleFilter, clearFilter, toggle, toggleAll, nav,
+                drop, restore, showAll,
             };
         },
         template: TEMPLATE,
@@ -291,7 +361,7 @@ export function mountEditor({ container, modeOff, offVerb = "mute", settings: in
         model,
         setGroups: (rows) => { model.groups = rows; },
         setSettings: (next) => {
-            Object.assign(settings, DEFAULTS, next ?? {});
+            Object.assign(settings, withDefaults(next));
             ui.filtering = !!settings.filter;
         },
         unmount: () => appVue.unmount(),

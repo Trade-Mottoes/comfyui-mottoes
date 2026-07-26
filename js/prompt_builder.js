@@ -125,6 +125,7 @@ function openEditor(node) {
     const dialog = mountEditor({
         container: overlay,
         model: node._pbModel,
+        live: node._pbLive,
         getSeed: () => Number(seedWidget(node)?.value ?? 0),
         setSeed: (v) => {
             const w = seedWidget(node);
@@ -154,10 +155,15 @@ function setup(node) {
     // One reactive model, shared by the node view and the editor dialog.
     const model = reactive(deserialize(initial));
     node._pbModel = model;
+    // Latest resolved output, transient (never serialized). The editor writes it on
+    // every preview/build so the node view reflects live edits, not just the last
+    // Build. Kept OUT of `model` so the editor's deep watch can't loop on it.
+    const live = reactive({ output: null });
+    node._pbLive = live;
 
     const container = document.createElement("div");
     node._pbEl = container;
-    node._pbView = mountNodeView({ container, model, openEditor: () => openEditor(node) });
+    node._pbView = mountNodeView({ container, model, live, openEditor: () => openEditor(node) });
 
     // Rehydrate on load (belt-and-suspenders alongside the widget's setValue).
     node._pbSetState = (s) => { applyState(model, s); resizeNode(node); };

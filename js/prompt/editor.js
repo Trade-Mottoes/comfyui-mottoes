@@ -487,7 +487,7 @@ const TEMPLATE = `
  * Returns the reactive model plus setState (replaces it in place, so the entry's
  * reference stays live for serialization).
  */
-export function mountEditor({ container, model, getSeed, setSeed, build, onChange, onClose }) {
+export function mountEditor({ container, model, live, getSeed, setSeed, build, onChange, onClose }) {
     injectStyles();
 
     const app = createApp({
@@ -574,6 +574,7 @@ export function mountEditor({ container, model, getSeed, setSeed, build, onChang
                     seedVal.value = seed;
                     const record = await build(model, seed);
                     preview.value = record; previewOpen.value = true;
+                    if (live) live.output = record.output;   // feed the node view live
                     if (commit) {
                         const snapshot = {
                             sections: model.sections.map((s) => ({ ...s })),

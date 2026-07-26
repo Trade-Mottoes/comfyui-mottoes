@@ -49,12 +49,16 @@ const TEMPLATE = `
 
 /** Mount the compact node view into `container`, bound to the shared `model`.
  *  `openEditor` opens the full editor dialog. */
-export function mountNodeView({ container, model, openEditor }) {
+export function mountNodeView({ container, model, live, openEditor }) {
     injectStyles();
     const app = createApp({
         setup() {
             const enabledCount = computed(() => model.sections.filter((s) => s.enabled).length);
-            const lastOutput = computed(() => (model.cache && model.cache.output) || "");
+            // the editor's latest live resolution, else the last committed Build
+            const lastOutput = computed(() => {
+                const o = live?.output;
+                return (o != null ? o : (model.cache && model.cache.output)) || "";
+            });
             return { model, openEditor, enabledCount, lastOutput };
         },
         template: TEMPLATE,

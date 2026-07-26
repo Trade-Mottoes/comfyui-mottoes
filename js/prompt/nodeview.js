@@ -15,7 +15,8 @@ function injectStyles() {
     style.id = "mottoes-pb-nodeview-css";
     style.textContent = `
         .pb-nv { display:flex; flex-direction:column; gap:6px; padding:4px 2px;
-            font-size:12px; box-sizing:border-box; color:var(--input-text,#ddd); }
+            font-size:12px; box-sizing:border-box; color:var(--input-text,#ddd);
+            height:100%; min-height:0; }
         .pb-nv .pb-nv-open { width:100%; height:30px; cursor:pointer; font-weight:600;
             background:var(--comfy-input-bg,#222); color:var(--input-text,#ddd);
             border:1px solid var(--border-color,#444); border-radius:5px; }
@@ -23,8 +24,9 @@ function injectStyles() {
         .pb-nv-summary { display:flex; flex-wrap:wrap; gap:6px; font-size:11px;
             color:var(--descrip-text,#aaa); padding:0 2px; }
         .pb-nv-summary .pb-nv-choice { color:#e0729e; }
-        .pb-nv-out { background:var(--comfy-input-bg,#222); border:1px solid var(--border-color,#444);
-            border-radius:5px; padding:6px 8px; max-height:96px; overflow:hidden; white-space:pre-wrap;
+        .pb-nv-out { flex:1 1 auto; min-height:48px; overflow-y:auto;
+            background:var(--comfy-input-bg,#222); border:1px solid var(--border-color,#444);
+            border-radius:5px; padding:6px 8px; white-space:pre-wrap;
             word-break:break-word; color:var(--input-text,#ddd); font-size:11.5px; line-height:1.45; }
         .pb-nv-out.empty { color:var(--descrip-text,#888); font-style:italic; }
         .pb-nv-locked { color:var(--p-primary-color,#4a90d9); }

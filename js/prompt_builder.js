@@ -22,11 +22,7 @@ const NODE = "Prompt Builder (Mottoes)";
 const STATE_WIDGET = "state";
 const STATE_WIDGET_TYPE = "prompt_state";   // our DOM widget, vs the auto textarea
 
-/** Height of the compact node view (grows a little with the output preview). */
-function nodeViewHeight(node) {
-    const measured = node._pbEl?.scrollHeight;
-    return measured > 0 ? measured + 6 : 108;
-}
+const MIN_VIEW_H = 120;   // the node view never gets shorter than this
 
 function resizeNode(node) {
     requestAnimationFrame(() => {
@@ -176,7 +172,14 @@ function setup(node) {
             resizeNode(node);
         },
     });
-    domWidget.computeSize = (w) => [w, nodeViewHeight(node)];
+    // Fill the node: give the view all the height from where it sits down to the
+    // node's bottom, so the output preview expands as the node is made taller
+    // (never below MIN_VIEW_H). `last_y` is this widget's drawn y within the node;
+    // before the first draw, fall back to a title + seed estimate.
+    domWidget.computeSize = function (width) {
+        const top = this.last_y > 0 ? this.last_y : 90;
+        return [width, Math.max(MIN_VIEW_H, (node.size?.[1] ?? 0) - top - 6)];
+    };
 
     resizeNode(node);
 }

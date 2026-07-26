@@ -23,6 +23,16 @@ handle, and a toggle-all header. Outputs `MODEL`, `CLIP`, and a structured
 `LORA_INFO` (name, hash, weight, CivitAI metadata) directly. A modern
 alternative to rgthree's Power Lora Loader.
 
+### Group Muter (Mottoes) / Group Bypasser (Mottoes)
+Mute or bypass whole workflow groups from a list of switches — one row per group
+in the graph the node sits in, with a colour swatch, a jump-to-group button, a
+title filter (plain text or `/regex/`), position or A→Z ordering, and an optional
+"at most one" / "exactly one" restriction for switching between alternative
+pipelines. The graph is the only state: the switches read the real node modes, so
+muting a group with Ctrl+M or from a second toggle node shows up here too. Modern
+alternatives to rgthree's Fast Groups Muter / Bypasser, which draw canvas widgets
+the Vue renderer (Nodes 2.0) does not render.
+
 ## Install
 
 Clone into your ComfyUI `custom_nodes` folder and restart ComfyUI:

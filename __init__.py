@@ -8,6 +8,7 @@ from typing import Any
 from .nodes.prompt_builder import PromptBuilder
 from .nodes.introspection import WorkflowMetadataResolver
 from .nodes.multi_lora_loader import MultiLoraLoader
+from .nodes.group_toggle import GroupMuter, GroupBypasser
 
 # Display names double as the node type ids — the frontend (js/*.js) references
 # these exact strings, so keep them in lock-step.
@@ -15,6 +16,8 @@ NODE_CLASS_MAPPINGS: dict[str, Any] = {
     "Prompt Builder (Mottoes)": PromptBuilder,
     "Workflow Metadata Resolver (Mottoes)": WorkflowMetadataResolver,
     "Multi Lora Loader (Mottoes)": MultiLoraLoader,
+    "Group Muter (Mottoes)": GroupMuter,
+    "Group Bypasser (Mottoes)": GroupBypasser,
 }
 
 WEB_DIRECTORY = "js"

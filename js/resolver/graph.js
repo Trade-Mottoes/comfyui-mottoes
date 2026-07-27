@@ -6,7 +6,11 @@
 
 export const RESOLVER_NODE = "Workflow Metadata Resolver (Mottoes)";
 
-// The metadata value types the editor understands. `auto` defers to the gallery
+// "The viewer", throughout this feature, means the bespoke consumer that reads
+// the bindings back out of the embedded prompt. It lives outside this repo; the
+// resolver takes no view on who it is.
+
+// The metadata value types the editor understands. `auto` defers to the viewer
 // (infer from the resolved value); the rest describe how a field should render.
 export const FIELD_TYPES = ["auto", "string", "prompt", "int", "float", "enum", "bool", "size", "hash", "lora"];
 
@@ -223,13 +227,14 @@ function loraSlots(node) {
 
 /** Multi Lora Loader (Mottoes): the whole LoRA stack lives in a single `loras`
  *  widget holding a JSON array of {on, lora, strength} rows — not rgthree's
- *  per-row dict widgets. Detected by that widget's presence; the (bespoke) gallery
- *  parses the JSON array into per-LoRA metadata. */
+ *  per-row dict widgets. Detected by that widget's presence; the viewer parses
+ *  the JSON array into per-LoRA metadata. */
 function hasLoraStack(node) {
     return (node?.widgets ?? []).some(w => w?.name === "loras");
 }
 
-/** Trace a sampler-centred graph into grouped, typed entries (mirrors the gallery).
+/** Trace a sampler-centred graph into grouped, typed entries (the field set the
+ *  viewer expects).
  *  Grouped Standard (prompts, model, size) → Sampling → LoRAs, each group emitted
  *  contiguously so a single header covers it. */
 export function autoFillEntries(graph) {
@@ -270,7 +275,7 @@ export function autoFillEntries(graph) {
                 if (slot.enabled) add(slot.input, n.id, slot.input, "lora", "LoRAs");
             }
         } else if (/Multi Lora Loader/i.test(cls) && hasLoraStack(n)) {
-            // Multi Lora Loader (Mottoes): bind the whole stack once; the gallery
+            // Multi Lora Loader (Mottoes): bind the whole stack once; the viewer
             // expands the `loras` JSON array into per-LoRA metadata.
             add("loras", n.id, "loras", "lora", "LoRAs");
         }

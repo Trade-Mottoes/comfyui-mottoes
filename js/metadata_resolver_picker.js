@@ -6,7 +6,7 @@ import { app } from '../../scripts/app.js'
 // the graph (`#node_id.input`), with an optional group header and value type. The
 // rows are edited in a Vue app (js/resolver/editor.js); this module owns the node
 // lifecycle — the hidden `bindings` DOM widget that serializes the rows into the
-// workflow/prompt (where the gallery reads them), sizing, and the right-click
+// workflow/prompt (where the viewer reads them), sizing, and the right-click
 // "Send to Metadata Resolver" capture. Rows serialize to JSON (v2); the legacy
 // line format still parses so old workflows open cleanly.
 
@@ -89,7 +89,7 @@ function setupResolverEditor(node) {
     node._resolverSetEntries = setEntries;
 
     // The DOM widget IS the `bindings` input: it serializes the rows into the
-    // prompt (which the gallery reads), so there is no separate text widget.
+    // prompt (which the viewer reads), so there is no separate text widget.
     const domWidget = node.addDOMWidget(BINDINGS_WIDGET, "resolver_rows", container, {
         serialize: true,
         getValue: () => serialize(model.entries),

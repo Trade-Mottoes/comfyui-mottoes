@@ -253,15 +253,19 @@ class WorkflowMetadataResolver:
     A wiring-free, pure-declaration node: each binding (`field: #node.input`)
     records where a value lives in the graph. The node has no outputs and needs
     no wiring — it is OUTPUT_NODE only so it stays in the executed prompt, which
-    embeds the bindings into saved images. Downstream consumers (e.g. the gallery)
-    read the bindings back from the embedded prompt and resolve them there.
+    embeds the bindings into saved images. The bindings are read back and
+    resolved by a **bespoke viewer maintained outside this repo**.
+
+    Note: this used to name the ComfyUI-Image-Saver-era gallery as the consumer.
+    That pairing is retired — the node emits the bindings and takes no view on
+    who resolves them.
     """
 
     OUTPUT_NODE = True
     RETURN_TYPES = ()
     FUNCTION = "resolve"
     CATEGORY = "Mottoes"
-    DESCRIPTION = "Declare where metadata fields live in the workflow (resolved downstream, e.g. by the gallery)"
+    DESCRIPTION = "Declare where metadata fields live in the workflow (resolved downstream by the viewer)"
 
     @classmethod
     def IS_CHANGED(cls, **kwargs) -> float:
@@ -300,8 +304,8 @@ class WorkflowMetadataResolver:
     ) -> dict[str, Any]:
         # Pure declaration: no outputs, nothing wired in. OUTPUT_NODE keeps the
         # node in the executed prompt so its bindings are embedded in saved
-        # images; the values are read back and resolved downstream (e.g. the
-        # gallery). We resolve here only to surface binding problems in the log.
+        # images; the values are read back and resolved downstream by the viewer.
+        # We resolve here only to surface binding problems in the log.
         parsed, parse_errors = parse_bindings(bindings)
         for err in parse_errors:
             print(f"WorkflowMetadataResolver: {err}")

@@ -4,7 +4,7 @@
 // `group` header or a `field` binding — and grouping is positional (a header
 // applies to the fields that follow it, until the next header). This list is
 // stored in the node's hidden `bindings` widget so it travels in the workflow /
-// prompt, where the gallery reads it back.
+// prompt, where the viewer reads it back.
 //
 // Going forward the widget holds JSON (v2). We still PARSE the legacy line format
 // (`field: #id.input`) so old workflows open cleanly; we only ever WRITE JSON.

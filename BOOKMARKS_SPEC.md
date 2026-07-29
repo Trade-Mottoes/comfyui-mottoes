@@ -59,10 +59,11 @@ capture: press a modifier+key) · **▶ go** (jump now) · **✕ remove**.
 - **Per-bookmark:** one global `window` keydown listener. Ignore it while typing
   (target is `input`/`textarea`/`[contenteditable]`). Require a modifier. On a
   canonical-combo match → fit that bookmark's group. `preventDefault`.
-- **Toggle panel:** a single static native command `mottoes.bookmarks.toggle`
-  (default e.g. `Alt+B`, remappable in ComfyUI's own hotkey settings) →
+- **Toggle panel:** a single static native command `mottoes.bookmarks.toggle` →
   `sidebarTab.toggleSidebarTab("mottoes.bookmarks")`. This is the "global key for
-  the manager".
+  the manager". Ships with **no default combo** — assign one in ComfyUI's own
+  hotkey settings. Declaring a default risks colliding with another extension's,
+  which makes ComfyUI throw on every load and drops ours.
 
 ## 6. Centering — fit-to-group
 

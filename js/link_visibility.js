@@ -1,11 +1,21 @@
 import { app } from "../../scripts/app.js";
 
-// Toggle graph link visibility. A normal ComfyUI command with a default hotkey
-// (Ctrl+Shift+L) — so it's remappable in Settings -> Keybindings and runnable
-// from the command palette. ComfyUI's native keybinding fires this fine on macOS
-// for Ctrl+Shift+L (verified). Note: ComfyUI matches keybindings by character,
-// so Option/Alt-based combos are unreliable on macOS (Option+L emits "¬") —
-// prefer Ctrl/Cmd/Shift combos when rebinding.
+// Toggle graph link visibility. A plain ComfyUI command, runnable from the
+// command palette — deliberately with NO default hotkey: assign one yourself in
+// Settings -> Keybindings.
+//
+// Why no default: two extensions declaring the same *default* combo makes ComfyUI
+// throw "Keybinding on <combo> already exists on <other command>" on every load,
+// and ours is the one dropped. We shipped Ctrl+Shift+L and collided with KJNodes'
+// ToggleForceShowSetGetLinks; any combo we pick can be claimed the same way by
+// whatever pack a user installs next. Note the error is not fixable from the UI —
+// the frontend's addDefaultKeybinding checks the *defaults* map, which the
+// set/unset bindings written by Settings never touch.
+//
+// When picking a combo: ComfyUI matches keybindings by character, so Option/Alt
+// combos are unreliable on macOS (Option+L emits "¬") — prefer Ctrl/Cmd/Shift.
+// A combo already owned by another extension can be taken in Settings, which
+// prompts to overwrite; that path is a user keybinding, so it collides with nothing.
 //
 // Comfy.LinkRenderMode option values: Straight 0, Linear 1, Spline 2,
 // Hidden -1 (LiteGraph.HIDDEN_LINK) — NOT 3, which was the real bug.
@@ -39,5 +49,4 @@ app.registerExtension({
             function: toggleLinks,
         },
     ],
-    keybindings: [{ commandId: "mottoes.links.toggle", combo: { key: "L", ctrl: true, shift: true } }],
 });

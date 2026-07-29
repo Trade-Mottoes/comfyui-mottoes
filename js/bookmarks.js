@@ -46,7 +46,10 @@ function onKeydown(e) {
 app.registerExtension({
     name: "Mottoes.Bookmarks",
 
-    // The one native, remappable hotkey — everything else is managed in the panel.
+    // The one native command — everything else is managed in the panel. No default
+    // hotkey on purpose: assign one in Settings -> Keybindings. Shipping a default
+    // means colliding with whatever other pack claims the same combo, and ComfyUI
+    // then throws on every load. See the note in link_visibility.js.
     commands: [
         {
             id: "mottoes.bookmarks.toggle",
@@ -54,7 +57,6 @@ app.registerExtension({
             function: () => app.extensionManager.sidebarTab.toggleSidebarTab(TAB_ID),
         },
     ],
-    keybindings: [{ commandId: "mottoes.bookmarks.toggle", combo: { key: "b", alt: true } }],
 
     async setup() {
         // Capture phase so a bookmark combo wins before ComfyUI's own handling.

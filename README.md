@@ -36,6 +36,26 @@ with Ctrl+M or from a second toggle node shows up here too. Modern alternatives
 to rgthree's Fast Groups Muter / Bypasser, which draw canvas widgets the Vue
 renderer (Nodes 2.0) does not render.
 
+## Commands
+
+Two frontend-only extras, no node involved. Both appear in the command palette
+and under Settings → Keybindings:
+
+- **Toggle link visibility (hide / show)** — flip every link in the graph between
+  hidden and the last visible render mode.
+- **Toggle Bookmarks panel** — open the Bookmarks sidebar, which jumps the canvas
+  to a workflow group. Bookmarks bind to a group's stable id (renaming is fine),
+  travel with the workflow, and take their own per-bookmark hotkeys assigned
+  inside the panel.
+
+Neither ships a **default hotkey**, deliberately. When two extensions declare the
+same default combo, ComfyUI throws `Keybinding on <combo> already exists on
+<command>` on every load and drops one of them — and that error can't be cleared
+from the settings UI, because the check runs against the defaults map that
+Settings never writes to. So pick your own combos in Settings → Keybindings; one
+already claimed by another pack is fair game there (it prompts to overwrite),
+since a user keybinding sits outside the defaults map entirely.
+
 ## Install
 
 Clone into your ComfyUI `custom_nodes` folder and restart ComfyUI:

@@ -4,7 +4,14 @@
 
 ## 1. Why
 
-ComfyUI prompt entry is a single dumb textarea. Every "prompt" node (including Pixaroma's — nicer-looking, same limitations) is a prettier textarea. Real prompt work is compositional and iterative: you toggle ideas on/off, keep variants, roll dice on style/subject, and want the *exact* prompt that produced a good image back later. Marinara-Engine's world-info / preset system already solved this for chat — composable enable/disable/reorder sections + a **seeded, lockable wildcard engine** + curated "choice" variables. This node ports that flexibility to image prompts, in the repo's existing Vue-standalone style (the Resolver editor).
+Real prompt work is compositional and iterative: you toggle ideas on/off, keep variants, roll dice on style/subject, and want the *exact* prompt that produced a good image back later. ComfyUI's own prompt entry is a single dumb textarea. Marinara-Engine's world-info / preset system already solved this shape of problem for chat — composable enable/disable/reorder sections + a **seeded, lockable wildcard engine** + curated "choice" variables. This node ports that flexibility to image prompts, in the repo's existing Vue-standalone style (the Resolver editor).
+
+**The field has moved (source reviewed 2026-07-29).** Pixaroma's re-thought `Prompt Pixaroma` is no longer a prettier textarea: it ships a machine-global tag library (`@tag` snippets, `*category` random pick, `#list` line pick) with a card-based manager, categories, export/import, and shuffle / random / in-order pick modes. An earlier draft of this spec waved it off as "nicer-looking, same limitations" — that is no longer true and shouldn't be repeated. Two differentiators survive it, and they're the ones to build on:
+
+1. **Resolution lives in Python, as a pure function of `(template, seed)`** (§9). Pixaroma expands on the frontend in a `graphToPrompt` hook and injects the result into a hidden input. That costs them three things we keep: a headless / API run gets an empty prompt (their own docstring says so); the pick is a persisted cursor with no seed relationship, so a good result can't be reproduced from its seed; and the preview can't show the real prompt — it prints the *mode* (`[shuffled line: animals]`) instead of the pick. Our preview and our run call the same resolver, so what you preview is what you render.
+2. **Prompts are assets, not a private blob.** Their library is one JSON object in an unregistered ComfyUI setting — per-machine, invisible to the workflow, deliberately private. Ours is headed for the **Gallery**, managed alongside the rest of the assets, which is where a prompt library belongs once you care about finding and reusing what produced an image. That integration is the point of the node; today's sparse UX is unfinished work, not the end state.
+
+Where they're ahead, take it: their no-repeat "deck" pick beats our sequential rotation (§5.1), and their library manager is real UX we don't have — wildcards are still bare `.txt` files with no editor (§11 P2).
 
 **Guiding principle: usability first.** The win is the interaction, not the feature count.
 
@@ -53,6 +60,39 @@ Three token types, resolved at build:
 - Each token salted by its own text + occurrence index, so tokens roll independently but **stably for a given seed** (Marinara pattern).
 - **Pins** (lever 2) key on `hash(sectionId + rawToken + occurrence)` — editing a token naturally invalidates its pin (self-healing).
 - `[a|b|c]` sequential: run mode uses the seed as counter (`control_after_generate = increment` → rotate per run); Build mode increments a stored per-token index. Combinatorial expansion (all permutations) is out of scope for v1.
+
+### 5.1 Deck mode — seeded no-repeat picks (proposed, P2)
+
+`{a|b|c}` is weighted-random per seed, so it repeats — `1,1,3,2,1` is normal. `[a|b|c]` rotates in fixed order, which never repeats but is entirely predictable. Neither gives the thing people actually want from a wildcard: *surprise me, but show me everything before you repeat.*
+
+Pixaroma solves this with a **deck** — deal every option once, then reshuffle. Theirs is *stateful*: a cursor per list, persisted in ComfyUI settings outside the workflow. We can't adopt that shape. Our whole design says output is a pure function of `(template, seed)` (§3 lever 1, §9); a stored cursor would break preview==run, break reproducibility, and let a run dirty state.
+
+**Stateless equivalent — same guarantee, derived instead of stored.** For a token with `n` options and the step counter `t` we already compute (`_sequential_index`: `t = seed + crc(key)` at run time, `counters[key]` in Build mode):
+
+```
+d = t // n                                    # which deck (cycle)
+p = t %  n                                    # position within it
+π = permutation of [0..n-1] from (seed, key, d)
+index = π[p]
+```
+
+Every option appears exactly once **per deck** — that is, per aligned window `t ∈ [d·n, (d+1)·n)` — the order reshuffles each cycle, and the whole thing is reproducible from `(seed, key)` with nothing persisted. Note the guarantee is per deck, not per arbitrary sliding window of `n`: a window straddling a boundary can still show one option twice. The boundary fix-up below removes the worst case (back-to-back), not every straddling duplicate.
+
+**Deck-boundary repeat.** Pixaroma also guarantees a new deck never opens on the card the old one closed with. We get that and stay pure: `π` for deck `d-1` is derivable too, so if `π_d[0] == π_(d-1)[n-1]`, swap `π_d[0]` with `π_d[1]` (`n ≥ 2`).
+
+**Where it applies** — a mode on the tokens that pick from a list:
+
+- `[a|b|c]` arrays — `order` (today's behaviour, stays the default) | `deck`.
+- `__name__` wildcards — same modes; this is where it earns its keep, on a long file where plain random repeats badly.
+- `{a|b|c}` stays weighted-random. A deck guarantees uniform coverage, which is the opposite of what a weight asks for. (Integer weights could expand to a multiset — `3::red` → three copies — but fractional ones can't, so this is out of scope rather than half-done.)
+
+**No new syntax.** The mode is a sparse per-token entry in node state, keyed exactly like pins (`hash(sectionId + rawToken + occurrence)`, §5) and set from the token popup editor that already exists. Editing the token invalidates its mode the same self-healing way pins work. Nothing new to parse — and no new delimiter to collide with `(…)` emphasis or `<lora:…>`.
+
+**Honest limitation.** The coverage guarantee holds while `t` advances by exactly 1 per run — `control_after_generate = increment`, or Build mode's counter. Under `randomize`, `t` jumps arbitrarily and you get random picks with locally-shuffled structure, not guaranteed coverage. Say so on the mode toggle. Pixaroma's stateful deck *does* hold under any seed mode — that's the one thing their design buys, and it costs them reproducibility everywhere else. The trade is right for us, but it is a real trade, not a free win.
+
+**Interactions.** A pinned token skips the roll entirely, deck or not (§3 lever 2). Changing `n` by editing the option list moves every deck boundary and effectively restarts the sequence — same practical outcome as Pixaroma's "editing the list starts its deck over", with no migration step.
+
+**Tests** (`tests/test_prompt_builder.py`): determinism for a given `(seed, key)`; exact coverage within each aligned deck window (not a sliding window — see above); no back-to-back repeat across a deck boundary; two consecutive decks differing in order; `n = 1` and empty-list edges; pin bypass; `order` mode behaviour unchanged.
 
 ## 6. Build artifact + history
 
@@ -116,16 +156,17 @@ Section { "id", "title", "enabled", "collapsed", "content" }
 ## 11. Phasing
 
 - **Phase 1 — ✅ shipped:** sections (add/remove/disable/reorder/collapse/**split-at-cursor**) · inline editor w/ live highlighting · `{a|b|c}` weighted + `[a|b|c]` sequential + `__name__` · per-token pin (auto/manual, with **pinned-value chips**) · popup list editor · seed reroll + locked/cache + Build · history + restore + preview · Python resolver + route + `STRING` output · tests.
-- **Phase 2:** Choice Blocks — ✅ **single / multi / random** (knobs strip + manager) landed · token counts · wildcard-file management UI.
+- **Phase 2:** Choice Blocks — ✅ **single / multi / random** (knobs strip + manager) landed · token counts · **deck mode** (§5.1) · wildcard-file management UI (the gap Pixaroma's card library exposes — ours are bare `.txt` files) · Gallery as the prompt/asset store.
 - **Phase 3:** conditionals / variables · **section groups** (collapsible; enable/disable and reorder a whole group as a block, à la the Resolver's group-block drag — JA flagged wanting this on 2026-07-23; deferred as possible overkill) · negative-role output · expose choices as node combo widgets.
 
 ## 12. Styling
 
-Match host theme via ComfyUI / PrimeVue CSS vars (repo's approach): `--comfy-input-bg`, `--input-text`, `--border-color`, `--descrip-text`, `--p-primary-color`, each with a hex fallback. Section cards: rounded, subtle border, accent on active / drag. Pixaroma is the polish bar — its source hasn't been read (different machine); a screenshot lets me calibrate.
+Match host theme via ComfyUI / PrimeVue CSS vars (repo's approach): `--comfy-input-bg`, `--input-text`, `--border-color`, `--descrip-text`, `--p-primary-color`, each with a hex fallback. Section cards: rounded, subtle border, accent on active / drag. Pixaroma is still the polish bar; its source **has** now been read (2026-07-29, `custom_nodes/ComfyUI-Pixaroma/js/prompt/`) — the parts worth calibrating against are the fullscreen card-based library manager and the inline token highlighting (known/unknown/random shown in distinct colours right in the textarea).
 
 ## 13. Open decisions (proceeding unless told otherwise)
 
 1. `[a|b|c]` = sequential rotation (not combinatorial). ⚠️ assumed.
-2. Resolution in Python + preview route (not dual JS/Python grammar). ⚠️ assumed.
-3. Adopt Choice Blocks in P2. ✅ shipped — single / multi / random.
-4. Node name `Prompt Builder (Mottoes)`. ✅ resolved (repo renamed from ComfyUI-Image-Saver).
+2. Deck mode (§5.1) is a per-token **mode**, not new syntax, and is derived from the seed rather than persisted. ⚠️ assumed — the alternative (a stored cursor, as Pixaroma does it) buys coverage under `randomize` at the cost of reproducibility.
+3. Resolution in Python + preview route (not dual JS/Python grammar). ⚠️ assumed.
+4. Adopt Choice Blocks in P2. ✅ shipped — single / multi / random.
+5. Node name `Prompt Builder (Mottoes)`. ✅ resolved (repo renamed from ComfyUI-Image-Saver).

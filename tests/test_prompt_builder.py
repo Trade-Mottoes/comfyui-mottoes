@@ -32,6 +32,7 @@ def state(sections, **kw):
         "sections": secs,
         "pins": kw.get("pins", {}),
         "counters": kw.get("counters", {}),
+        "modes": kw.get("modes", {}),
         "choices": kw.get("choices", []),
     }
 
@@ -122,6 +123,116 @@ class ArrayTests(unittest.TestCase):
         key = "s0|%s|0" % content
         st["counters"] = {key: 1}
         self.assertEqual(pb.resolve_prompt(st, 999)["output"], "b")
+
+
+class DeckTests(unittest.TestCase):
+    """Deck mode — seeded no-repeat picks (PROMPT_NODE_SPEC §5.1).
+
+    Run-time ``t`` is ``seed + crc(key)``, so walking the seed by 1 walks the deck
+    by one step — which is what ``control_after_generate = increment`` does.
+    """
+
+    ARR = "[a|b|c|d|e]"
+    OPTS = {"a", "b", "c", "d", "e"}
+
+    def deck(self, content=None):
+        content = content or self.ARR
+        return {"modes": {"s0|%s|0" % content: "deck"}}
+
+    def walk(self, n, content=None, first=0, **kw):
+        content = content or self.ARR
+        return [out([content], seed=s, **kw) for s in range(first, first + n)]
+
+    def test_covers_every_option_within_a_deck(self):
+        # Any aligned window of n steps deals every option exactly once. Which
+        # window is aligned depends on crc(key), so scan for the first boundary.
+        n = len(self.OPTS)
+        picks = self.walk(3 * n, **self.deck())
+        for start in range(n):
+            windows = [picks[i : i + n] for i in range(start, 2 * n, n)]
+            if all(set(w) == self.OPTS for w in windows):
+                return
+        self.fail("no aligned window of %d dealt every option once: %r" % (n, picks))
+
+    def test_no_back_to_back_repeat(self):
+        picks = self.walk(60, **self.deck())
+        dupes = [(i, picks[i]) for i in range(1, len(picks)) if picks[i] == picks[i - 1]]
+        self.assertEqual(dupes, [], "deck repeated back-to-back")
+
+    def test_deterministic_for_seed(self):
+        self.assertEqual(self.walk(12, **self.deck()), self.walk(12, **self.deck()))
+
+    def test_reshuffles_between_decks(self):
+        # Consecutive decks must differ in order, or it is a rotation in a hat.
+        for n in (3, 5, 9):
+            orders = {tuple(pb._deck_permutation(n, "k", d)) for d in range(6)}
+            self.assertGreater(len(orders), 1, "n=%d never reshuffled" % n)
+
+    def test_differs_from_plain_rotation(self):
+        self.assertNotEqual(self.walk(15, **self.deck()), self.walk(15))
+
+    def test_two_options_alternate(self):
+        picks = self.walk(8, content="[a|b]", **self.deck("[a|b]"))
+        self.assertEqual(set(picks), {"a", "b"})
+        self.assertEqual(picks, [picks[i % 2] for i in range(8)])  # strict alternation
+
+    def test_single_option(self):
+        self.assertEqual(self.walk(4, content="[only]", **self.deck("[only]")), ["only"] * 4)
+
+    def test_empty_options(self):
+        self.assertEqual(out(["[]"], **self.deck("[]")), "")
+
+    def test_explicit_counter_walks_the_deck(self):
+        content = self.ARR
+        key = "s0|%s|0" % content
+        picks = []
+        for t in range(len(self.OPTS)):
+            st = state([content], modes={key: "deck"}, counters={key: t})
+            picks.append(pb.resolve_prompt(st, 999)["output"])
+        self.assertEqual(set(picks), self.OPTS)
+
+    def test_order_mode_unchanged(self):
+        # No mode, and an explicitly-stored default, both stay plain rotation.
+        content = self.ARR
+        key = "s0|%s|0" % content
+        self.assertEqual(self.walk(10), self.walk(10, modes={key: "order"}))
+
+    def test_pin_beats_deck(self):
+        content = self.ARR
+        key = "s0|%s|0" % content
+        st = state([content], modes={key: "deck"}, pins={key: "zzz"})
+        self.assertEqual(pb.resolve_prompt(st, 0)["output"], "zzz")
+
+    def test_choice_token_ignores_deck(self):
+        # {…} stays weighted-random even if a mode is somehow stored against it.
+        content = "{a|b|c|d|e}"
+        key = "s0|%s|0" % content
+        with_mode = [out([content], seed=s, modes={key: "deck"}) for s in range(20)]
+        without = [out([content], seed=s) for s in range(20)]
+        self.assertEqual(with_mode, without)
+
+    def test_wildcard_deck_covers_the_file(self):
+        wc = {"color": ["red", "green", "blue", "cyan"]}
+        key = "s0|__color__|0"
+        picks = [out(["__color__"], seed=s, wildcards=wc, modes={key: "deck"}) for s in range(24)]
+        self.assertEqual(set(picks), {"red", "green", "blue", "cyan"})
+        self.assertEqual([p for i, p in enumerate(picks) if i and p == picks[i - 1]], [])
+
+    def test_wildcard_deck_strips_weight_prefix(self):
+        # Deck mode is positional, so it ignores the weight — but must not leak "3::".
+        wc = {"color": ["3::red", "green", "blue"]}
+        key = "s0|__color__|0"
+        picks = {out(["__color__"], seed=s, wildcards=wc, modes={key: "deck"}) for s in range(12)}
+        self.assertEqual(picks, {"red", "green", "blue"})
+
+    def test_deck_permutation_is_a_permutation(self):
+        for n in (1, 2, 3, 7, 12):
+            for d in (-2, 0, 1, 5):
+                self.assertEqual(sorted(pb._deck_permutation(n, "k", d)), list(range(n)))
+
+    def test_step_survives_junk_counter(self):
+        # Hand-edited state must not crash the whole queue.
+        self.assertIsInstance(pb._step(3, "k", {"k": "nonsense"}), int)
 
 
 class WildcardTests(unittest.TestCase):

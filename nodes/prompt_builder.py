@@ -19,6 +19,11 @@ Grammar (resolved at build time):
 Tokens nest ({red|{light|dark} blue}); the chosen branch is re-resolved.
 Each token is salted by (section, raw text, occurrence) so identical tokens
 roll independently yet stably for a given seed.
+
+Arrays and wildcards also take a per-token **deck** mode (a sparse ``modes`` map
+keyed like ``pins``): every option comes up once before any repeat, derived from
+the seed rather than a stored cursor. See ``_deck_permutation`` and
+PROMPT_NODE_SPEC §5.1.
 """
 
 from __future__ import annotations
@@ -123,18 +128,87 @@ def _weighted_pick(options: list[str], seed: int, key: str) -> str:
     return parsed[-1][1]
 
 
-def _sequential_index(n: int, seed: int, key: str, counters: dict[str, int]) -> int:
-    """Sequential position for an ``[a|b|c]`` token.
+def _step(seed: int, key: str, counters: dict[str, int]) -> int:
+    """The step counter ``t`` for a positional token.
 
     Build mode threads an explicit per-token counter; at run time the seed *is*
     the counter (control_after_generate=increment rotates one step per queue).
-    A stable per-token offset phase-shifts each array so they don't lock-step.
+    A stable per-token offset phase-shifts each token so they don't lock-step.
+    Shared by sequential and deck modes so the two always advance together.
+    """
+    if key in counters:
+        try:
+            return int(counters[key])
+        except (TypeError, ValueError):
+            pass  # hand-edited state; fall through to the seed
+    return seed + _crc(key)
+
+
+def _sequential_index(n: int, seed: int, key: str, counters: dict[str, int]) -> int:
+    """Sequential position for an ``[a|b|c]`` token — plain rotation."""
+    if n <= 0:
+        return 0
+    return _step(seed, key, counters) % n
+
+
+def _deck_order(n: int, key: str, deck: int) -> list[int]:
+    """The raw shuffled order for one deck — no boundary fix-up (see below).
+
+    Keyed on ``(key, deck)`` and deliberately NOT on the run seed: every step
+    inside a deck must compute the *same* order, and the seed advances on every
+    step. The seed still drives the sequence — it decides which deck you are in
+    and where in it (``_deck_index``) — so the pick stays a function of
+    ``(seed, key)`` without the order dissolving underneath it.
+    """
+    order = list(range(n))
+    _rng(deck, f"deck:{key}").shuffle(order)
+    return order
+
+
+def _deck_permutation(n: int, key: str, deck: int) -> list[int]:
+    """Deck ``deck``'s option order: a shuffle of ``range(n)``.
+
+    Derived rather than stored, so a deck keeps the no-repeat guarantee without
+    persisting a cursor (PROMPT_NODE_SPEC §5.1) — preview and run still agree,
+    and a run never dirties state.
+
+    A new deck must not open on the option the previous one closed with. The
+    fix-up only ever touches positions 0 and 1, so for ``n >= 3`` the previous
+    deck's *last* position is untouched by its own fix-up and the raw order is
+    a safe thing to compare against — no recursion.
+
+    ``n == 2`` can't be shuffled under that constraint: forbidding a back-to-back
+    repeat forces strict alternation, which is the sequence below (and the reason
+    a two-option deck looks identical to a rotation — that is correct, not a bug).
+    """
+    if n <= 1:
+        return list(range(max(n, 0)))
+    if n == 2:
+        phase = _crc(key) % 2
+        return [phase, 1 - phase]
+    order = _deck_order(n, key, deck)
+    if order[0] == _deck_order(n, key, deck - 1)[-1]:
+        order[0], order[1] = order[1], order[0]
+    return order
+
+
+def _deck_index(n: int, seed: int, key: str, counters: dict[str, int]) -> int:
+    """Index for a deck-mode token: every option once per deck, then reshuffle.
+
+    Coverage is guaranteed *per deck* — each aligned window
+    ``t in [d*n, (d+1)*n)`` — not per arbitrary window of ``n``, and it needs
+    ``t`` to advance by one per run (``control_after_generate = increment``, or
+    Build mode's counter). Under ``randomize`` the seed jumps, so picks stay
+    shuffled but coverage is no longer promised.
     """
     if n <= 0:
         return 0
-    if key in counters:
-        return counters[key] % n
-    return (seed + _crc(key)) % n
+    deck, pos = divmod(_step(seed, key, counters), n)  # floor division: pos in [0, n)
+    return _deck_permutation(n, key, deck)[pos]
+
+
+def _is_deck(ctx: dict, key: str) -> bool:
+    return ctx["modes"].get(key) == "deck"
 
 
 # --------------------------------------------------------------------------- #
@@ -219,9 +293,12 @@ def _resolve_bracket(kind, raw, inner, ctx, section_id):
     options = _split_top_level(inner)
     index = None
     if kind == "choice":
+        # {…} stays weighted-random: a deck guarantees uniform coverage, which is
+        # the opposite of what a weight asks for (PROMPT_NODE_SPEC §5.1).
         chosen_raw = _weighted_pick(options, ctx["seed"], key)
     else:
-        index = _sequential_index(len(options), ctx["seed"], key, ctx["counters"])
+        pick = _deck_index if _is_deck(ctx, key) else _sequential_index
+        index = pick(len(options), ctx["seed"], key, ctx["counters"])
         chosen_raw = options[index] if options else ""
     resolved, sub = _resolve_template(chosen_raw, ctx, section_id)
     return resolved, [_roll(key, kind, raw, resolved, index=index)] + sub
@@ -235,9 +312,17 @@ def _resolve_wildcard(name, raw, ctx, section_id):
     if not options:
         ctx["warnings"].append(f"unknown wildcard __{name}__")
         return raw, [_roll(key, "wildcard", raw, raw, source="missing")]
-    chosen_raw = _weighted_pick(list(options), ctx["seed"], key)
+    options = list(options)
+    index = None
+    if _is_deck(ctx, key):
+        # Deck mode is positional, so it ignores weights — but the line may still
+        # carry a "3::" prefix, which must not reach the prompt verbatim.
+        index = _deck_index(len(options), ctx["seed"], key, ctx["counters"])
+        chosen_raw = _parse_weight(options[index])[1]
+    else:
+        chosen_raw = _weighted_pick(options, ctx["seed"], key)
     resolved, sub = _resolve_template(chosen_raw, ctx, section_id)
-    return resolved, [_roll(key, "wildcard", raw, resolved)] + sub
+    return resolved, [_roll(key, "wildcard", raw, resolved, index=index)] + sub
 
 
 def _choice_value(cdef: dict, ctx: dict) -> str:
@@ -314,6 +399,7 @@ def resolve_prompt(state: Any, seed: int, wildcards: dict | None = None, now: in
         "seed": int(seed),
         "pins": st.get("pins") or {},
         "counters": st.get("counters") or {},
+        "modes": st.get("modes") or {},
         "wildcards": wildcards or {},
         "choices": {c["name"]: c for c in (st.get("choices") or []) if isinstance(c, dict) and c.get("name")},
         "choice_cache": {},
@@ -358,6 +444,7 @@ _DEFAULT_STATE = json.dumps(
         ],
         "pins": {},
         "counters": {},
+        "modes": {},
         "choices": [],
         "cache": None,
         "history": [],

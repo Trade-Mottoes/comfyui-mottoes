@@ -176,6 +176,10 @@ function injectStyles() {
             border:1px solid var(--border-color,#444); border-radius:4px; padding:3px 6px;
             font-size:12px; font-weight:600; height:27px; cursor:pointer; }
         .pb-dhead .pb-dtype:hover { border-color:var(--p-primary-color,#4a90d9); }
+        /* a wildcard's name is fixed — shown as a label where the type picker sits */
+        .pb-dhead .pb-dwild { display:inline-flex; align-items:center; cursor:default;
+            color:var(--p-primary-color,#4a90d9); font-family:ui-monospace,monospace; }
+        .pb-dhead .pb-dwild:hover { border-color:var(--border-color,#444); }
         .pb-orows { display:flex; flex-direction:column; gap:4px; padding:8px 10px; max-height:64vh; overflow-y:auto; }
         /* top-aligned: a wrapped multi-line value keeps its controls on the first line */
         .pb-orow { display:flex; align-items:flex-start; gap:5px; border-radius:4px; }
@@ -400,14 +404,25 @@ const TEMPLATE = `
     <div v-if="popup.open" class="pb-overlay" @click.self="closeTokenEditor(true)">
       <div class="pb-dialog">
         <div class="pb-dhead">
-          <select class="pb-dtype" :value="popup.type" @change="setPopupType($event.target.value)"
+          <select v-if="popup.type!=='wildcard'" class="pb-dtype" :value="popup.type"
+                  @change="setPopupType($event.target.value)"
                   title="Switch this token between weighted-random and sequential">
             <option value="choice">Choice  {…}</option>
             <option value="array">Array  […]</option>
           </select>
-          <span class="pb-dsub">{{ popup.type==='choice' ? 'weighted random — one is picked' : 'sequential — advances by index' }}</span>
+          <span v-else class="pb-dtype pb-dwild">{{ popup.raw }}</span>
+          <select v-if="canDeck()" class="pb-dtype" :value="popup.mode"
+                  @change="popup.mode=$event.target.value"
+                  title="Order: step through in sequence. Deck: every option comes up once before any repeat.">
+            <option value="">Order</option>
+            <option value="deck">Deck</option>
+          </select>
+          <span class="pb-dsub">{{ popupHint }}</span>
         </div>
-        <div class="pb-orows">
+        <div v-if="popup.type==='wildcard'" class="pb-empty">
+          Options come from the wildcard file — edit it on disk. Pick mode is set above.
+        </div>
+        <div v-else class="pb-orows">
           <div v-for="(o,oi) in popup.options" :key="oi" class="pb-orow" :class="optRowClass(oi)"
                @dragover.prevent="onOptDragOver($event,oi)" @drop.prevent="onOptDrop(oi)">
             <span class="pb-ohandle" draggable="true" @dragstart="onOptDragStart(oi)" @dragend="onOptDragEnd"
@@ -423,7 +438,7 @@ const TEMPLATE = `
           <div v-if="!popup.options.length" class="pb-empty">No options</div>
         </div>
         <div class="pb-dfoot">
-          <button @click="addOption">+ Option</button>
+          <button v-if="popup.type!=='wildcard'" @click="addOption">+ Option</button>
           <span v-if="popup.pinned!=null" class="pb-pinnote">📌 pinned “{{ popup.pinned }}”</span>
           <span class="pb-grow"></span>
           <button @click="closeTokenEditor(true)">Done</button>
@@ -579,6 +594,7 @@ export function mountEditor({ container, model, live, getSeed, setSeed, build, o
                         const snapshot = {
                             sections: model.sections.map((s) => ({ ...s })),
                             pins: { ...model.pins }, counters: { ...model.counters },
+                            modes: { ...(model.modes || {}) },
                             choices: model.choices.map((c) => ({ ...c, options: c.options.map((o) => ({ ...o })) })),
                             settings: { ...model.settings }, seed,
                         };
@@ -604,6 +620,7 @@ export function mountEditor({ container, model, live, getSeed, setSeed, build, o
                 if (!s) return;
                 model.sections.splice(0, model.sections.length, ...s.sections.map((x) => makeSection(x)));
                 model.pins = { ...s.pins }; model.counters = { ...s.counters }; model.settings = { ...s.settings };
+                model.modes = { ...(s.modes || {}) };   // older history records have none
                 if (s.choices) model.choices = s.choices.map((c) => makeChoice(c));
                 setSeed?.(s.seed);
                 model.cache = { output: h.output, seed: h.seed, mode: h.mode, builtAt: h.builtAt, sections: h.sections, rolls: h.rolls, warnings: h.warnings };
@@ -624,9 +641,11 @@ export function mountEditor({ container, model, live, getSeed, setSeed, build, o
             };
 
             // ---- token list editor: double-click a {…}/[…] token ----
+            // Also opens for a __wildcard__, in a reduced form: its options live in
+            // a .txt file the frontend can't see, so only the pick mode is editable.
             const popup = reactive({
                 open: false, sectionId: null, start: 0, end: 0,
-                type: null, raw: "", key: "", options: [], pinned: null,
+                type: null, raw: "", key: "", options: [], pinned: null, mode: "",
             });
             // Re-measure once the dialog has its final width: a mount-time
             // scrollHeight taken before layout settles wraps long and clamps
@@ -636,21 +655,37 @@ export function mountEditor({ container, model, live, getSeed, setSeed, build, o
             }));
             const openTokenEditor = (s, offset) => {
                 const ctx = tokenContextAt(s.content || "", offset);
-                if (!ctx || (ctx.seg.type !== "choice" && ctx.seg.type !== "array")) return;
+                if (!ctx || !["choice", "array", "wildcard"].includes(ctx.seg.type)) return;
+                const wild = ctx.seg.type === "wildcard";
                 popup.sectionId = s.id;
                 popup.start = ctx.seg.start;
                 popup.end = ctx.seg.end;
                 popup.type = ctx.seg.type;
                 popup.raw = ctx.seg.text;
                 popup.key = `${s.id}|${ctx.seg.text}|${ctx.occ}`;
-                popup.options = splitTopLevel(ctx.seg.text.slice(1, -1)).map((o) => parseOption(o, ctx.seg.type));
+                popup.options = wild
+                    ? []
+                    : splitTopLevel(ctx.seg.text.slice(1, -1)).map((o) => parseOption(o, ctx.seg.type));
                 popup.pinned = model.pins[popup.key] ?? null;
+                popup.mode = (model.modes || {})[popup.key] ?? "";
                 popup.open = true;
                 remeasureOptions();
             };
             /** Switch the token between weighted-random {…} and sequential […].
              *  The weight column appears/disappears, so the values reflow. */
-            const setPopupType = (v) => { popup.type = v; remeasureOptions(); };
+            const setPopupType = (v) => {
+                popup.type = v;
+                if (v === "choice") popup.mode = "";   // {…} is always weighted-random
+                remeasureOptions();
+            };
+            // Deck mode only means something for the positional pickers.
+            const canDeck = () => popup.type === "array" || popup.type === "wildcard";
+            const popupHint = computed(() => {
+                if (popup.type === "choice") return "weighted random — one is picked";
+                if (popup.mode === "deck") return "deck — every option once before any repeat";
+                if (popup.type === "wildcard") return "random — one line of the wildcard file";
+                return "sequential — advances by index";
+            });
             const onTaDblClick = (s, ev) => openTokenEditor(s, ev.target.selectionStart ?? 0);
             const addOption = () => popup.options.push({ value: "", weight: "" });
 
@@ -678,17 +713,27 @@ export function mountEditor({ container, model, live, getSeed, setSeed, build, o
                 if (commit) {
                     const sec = model.sections.find((s) => s.id === popup.sectionId);
                     if (sec) {
-                        const rebuilt = buildTokenString(popup.type, popup.options);
-                        sec.content = sec.content.slice(0, popup.start) + rebuilt + sec.content.slice(popup.end);
-                        // Re-key the pin against the (possibly rewritten) token, and drop it
-                        // if the pinned value no longer exists — same self-healing as Python.
+                        // A wildcard's text is not ours to rewrite — its options live in
+                        // the .txt file, so only the mode can have changed.
+                        if (popup.type !== "wildcard") {
+                            const rebuilt = buildTokenString(popup.type, popup.options);
+                            sec.content = sec.content.slice(0, popup.start) + rebuilt + sec.content.slice(popup.end);
+                        }
+                        // Re-key pin + mode against the (possibly rewritten) token, and drop
+                        // the pin if its value no longer exists — same self-healing as Python.
                         const pins = { ...model.pins };
+                        const modes = { ...(model.modes || {}) };
                         delete pins[popup.key];
+                        delete modes[popup.key];
                         const ctx = tokenContextAt(sec.content, popup.start);
-                        if (ctx && popup.pinned != null && popup.options.some((o) => o.value === popup.pinned)) {
-                            pins[`${sec.id}|${ctx.seg.text}|${ctx.occ}`] = popup.pinned;
+                        if (ctx) {
+                            const key = `${sec.id}|${ctx.seg.text}|${ctx.occ}`;
+                            if (popup.pinned != null && (popup.type === "wildcard" || popup.options.some((o) => o.value === popup.pinned)))
+                                pins[key] = popup.pinned;
+                            if (popup.mode === "deck" && canDeck()) modes[key] = "deck";
                         }
                         model.pins = pins;
+                        model.modes = modes;
                         changed();
                         growAll();
                     }
@@ -711,8 +756,8 @@ export function mountEditor({ container, model, live, getSeed, setSeed, build, o
                 return out;
             };
             const unpin = (key) => { const p = { ...model.pins }; delete p[key]; model.pins = p; changed(); };
-            // wildcard pins have no list dialog — clicking the chip opens the editor only for {…}/[…]
-            const openPinEditor = (s, pin) => { if (pin.type !== "wildcard") openTokenEditor(s, pin.start + 1); };
+            // every token type now has a dialog — a wildcard's is the reduced (mode-only) one
+            const openPinEditor = (s, pin) => openTokenEditor(s, pin.start + 1);
 
             // ---- split a section in two at the caret (Alt+Enter / the ✂ header button) ----
             const carets = {};   // last caret offset per section id; transient, never serialized
@@ -724,9 +769,10 @@ export function mountEditor({ container, model, live, getSeed, setSeed, build, o
                 const cut = snapSplit(content, caret);
                 const ns = makeSection({ enabled: s.enabled, content: content.slice(cut) });
                 s.content = content.slice(0, cut);
-                // carry pins/counters on tokens that crossed into the new section
+                // carry pins/counters/modes on tokens that crossed into the new section
                 model.pins = rekeyMap(model.pins, s.id, ns.id, cut, content);
                 model.counters = rekeyMap(model.counters, s.id, ns.id, cut, content);
+                model.modes = rekeyMap(model.modes || {}, s.id, ns.id, cut, content);
                 model.sections.splice(idx + 1, 0, ns);
                 changed();
                 growAll();
@@ -929,7 +975,7 @@ export function mountEditor({ container, model, live, getSeed, setSeed, build, o
                 toggleMode, setJoiner,
                 sectionClass, onDragStart, onDragOver, onDrop, onDragEnd,
                 doPreview, doBuild, reseed, restore, copyOut,
-                popup, titlePlaceholder, onTaDblClick, addOption, togglePin, closeTokenEditor,
+                popup, popupHint, canDeck, titlePlaceholder, onTaDblClick, addOption, togglePin, closeTokenEditor,
                 optRowClass, onOptDragStart, onOptDragOver, onOptDrop, onOptDragEnd,
                 sectionPins, unpin, openPinEditor, trackCaret, onTaKeydown, splitAtCaret,
                 addChoice, removeChoice, selectSingle, selOptValue, multiSummary, openChoiceEditor,

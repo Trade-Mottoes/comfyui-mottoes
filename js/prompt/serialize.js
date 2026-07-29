@@ -59,6 +59,7 @@ export function defaultState() {
         sections: [makeSection()],
         pins: {},
         counters: {},
+        modes: {},
         choices: [],
         cache: null,
         history: [],
@@ -75,6 +76,7 @@ function normalize(o) {
             : st.sections;
     st.pins = o.pins && typeof o.pins === "object" ? o.pins : {};
     st.counters = o.counters && typeof o.counters === "object" ? o.counters : {};
+    st.modes = o.modes && typeof o.modes === "object" ? o.modes : {};
     st.choices = Array.isArray(o.choices) ? o.choices.map(makeChoice) : [];
     st.cache = o.cache || null;
     st.history = Array.isArray(o.history) ? o.history : [];
@@ -110,6 +112,7 @@ export function toPlain(state) {
         })),
         pins: state.pins,
         counters: state.counters,
+        modes: state.modes,
         choices: state.choices.map((c) => ({
             id: c.id,
             name: c.name,
@@ -136,6 +139,7 @@ export function applyState(model, s) {
     model.sections.splice(0, model.sections.length, ...s.sections);
     model.pins = s.pins;
     model.counters = s.counters;
+    model.modes = s.modes || {};
     model.choices = s.choices || [];
     model.cache = s.cache;
     model.history = s.history;

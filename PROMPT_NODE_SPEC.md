@@ -61,7 +61,7 @@ Three token types, resolved at build:
 - **Pins** (lever 2) key on `hash(sectionId + rawToken + occurrence)` — editing a token naturally invalidates its pin (self-healing).
 - `[a|b|c]` sequential: run mode uses the seed as counter (`control_after_generate = increment` → rotate per run); Build mode increments a stored per-token index. Combinatorial expansion (all permutations) is out of scope for v1.
 
-### 5.1 Deck mode — seeded no-repeat picks (proposed, P2)
+### 5.1 Deck mode — seeded no-repeat picks (✅ shipped)
 
 `{a|b|c}` is weighted-random per seed, so it repeats — `1,1,3,2,1` is normal. `[a|b|c]` rotates in fixed order, which never repeats but is entirely predictable. Neither gives the thing people actually want from a wildcard: *surprise me, but show me everything before you repeat.*
 
@@ -70,11 +70,18 @@ Pixaroma solves this with a **deck** — deal every option once, then reshuffle.
 **Stateless equivalent — same guarantee, derived instead of stored.** For a token with `n` options and the step counter `t` we already compute (`_sequential_index`: `t = seed + crc(key)` at run time, `counters[key]` in Build mode):
 
 ```
-d = t // n                                    # which deck (cycle)
-p = t %  n                                    # position within it
-π = permutation of [0..n-1] from (seed, key, d)
+d = t // n                                 # which deck (cycle)
+p = t %  n                                 # position within it
+π = permutation of [0..n-1] from (key, d)  # NOT from the seed — see below
 index = π[p]
 ```
+
+⚠️ **`π` must not be salted with the run seed.** The seed advances on every step, so
+seeding the shuffle with it re-deals the deck underneath you mid-deck and destroys
+both coverage and the no-repeat guarantee. (Written that way first; the tests caught
+it.) The seed still drives the sequence — it decides *which* deck you're in and where
+in it, via `t` — so the pick stays a pure function of `(seed, key)` while the order
+within a deck stays fixed for that deck's whole run.
 
 Every option appears exactly once **per deck** — that is, per aligned window `t ∈ [d·n, (d+1)·n)` — the order reshuffles each cycle, and the whole thing is reproducible from `(seed, key)` with nothing persisted. Note the guarantee is per deck, not per arbitrary sliding window of `n`: a window straddling a boundary can still show one option twice. The boundary fix-up below removes the worst case (back-to-back), not every straddling duplicate.
 
@@ -156,7 +163,7 @@ Section { "id", "title", "enabled", "collapsed", "content" }
 ## 11. Phasing
 
 - **Phase 1 — ✅ shipped:** sections (add/remove/disable/reorder/collapse/**split-at-cursor**) · inline editor w/ live highlighting · `{a|b|c}` weighted + `[a|b|c]` sequential + `__name__` · per-token pin (auto/manual, with **pinned-value chips**) · popup list editor · seed reroll + locked/cache + Build · history + restore + preview · Python resolver + route + `STRING` output · tests.
-- **Phase 2:** Choice Blocks — ✅ **single / multi / random** (knobs strip + manager) landed · token counts · **deck mode** (§5.1) · wildcard-file management UI (the gap Pixaroma's card library exposes — ours are bare `.txt` files) · Gallery as the prompt/asset store.
+- **Phase 2:** Choice Blocks — ✅ **single / multi / random** (knobs strip + manager) landed · **deck mode** (§5.1) ✅ landed (arrays + wildcards, Order/Deck picker in the token dialog, which now opens for `__wildcards__` too) · token counts · wildcard-file management UI (the gap Pixaroma's card library exposes — ours are bare `.txt` files) · Gallery as the prompt/asset store.
 - **Phase 3:** conditionals / variables · **section groups** (collapsible; enable/disable and reorder a whole group as a block, à la the Resolver's group-block drag — JA flagged wanting this on 2026-07-23; deferred as possible overkill) · negative-role output · expose choices as node combo widgets.
 
 ## 12. Styling

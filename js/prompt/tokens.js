@@ -94,8 +94,10 @@ const esc = (s) =>
 
 /** HTML for the highlight backdrop behind the textarea. Trailing newline keeps
  *  the backdrop's height in step with the textarea as the last line is edited.
- *  Pass the section id and pins to tint tokens that are pinned to a value. */
-export function highlightHtml(text, sectionId = "", pins = null, choiceNames = null) {
+ *  Pass the section id, pins and modes to tint tokens that are pinned to a value
+ *  or dealing from a deck — a mode you can't otherwise see without reopening the
+ *  token dialog. A pin wins the tint: it overrides the mode entirely at build. */
+export function highlightHtml(text, sectionId = "", pins = null, choiceNames = null, modes = null) {
     const counts = {};
     const html = tokenize(text)
         .map((s) => {
@@ -108,8 +110,11 @@ export function highlightHtml(text, sectionId = "", pins = null, choiceNames = n
             // occurrence counting mirrors tokenContextAt / Python's _next_key
             const occ = counts[s.text] ?? 0;
             counts[s.text] = occ + 1;
-            const pinned = pins && pins[`${sectionId}|${s.text}|${occ}`] !== undefined;
-            return `<span class="tok tok-${s.type}${pinned ? " tok-pinned" : ""}">${esc(s.text)}</span>`;
+            const key = `${sectionId}|${s.text}|${occ}`;
+            const pinned = pins && pins[key] !== undefined;
+            const deck = !pinned && modes && modes[key] === "deck";
+            const extra = pinned ? " tok-pinned" : deck ? " tok-deck" : "";
+            return `<span class="tok tok-${s.type}${extra}">${esc(s.text)}</span>`;
         })
         .join("");
     return html + "\n";

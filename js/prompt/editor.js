@@ -135,6 +135,8 @@ function injectStyles() {
         .pb-editor .tok-error    { color:var(--error-text,#c0504d); text-decoration:underline wavy; }
         /* pinned to a value — deliberately a hue none of the three types use */
         .pb-editor .tok-pinned   { color:#5ec9a0; background:rgba(94,201,160,0.15); border-radius:3px; }
+        /* deck: amber, distinct from pinned green — the token still rolls, just without repeats */
+        .pb-editor .tok-deck     { color:#e0a44a; background:rgba(224,164,74,0.13); border-radius:3px; }
 
         .pb-history { display:flex; flex-direction:column; gap:2px; max-height:150px; overflow-y:auto;
             border:1px solid var(--border-color,#444); border-radius:4px; padding:2px; }
@@ -212,12 +214,16 @@ function injectStyles() {
         .pb-shead .pb-split { flex:0 0 26px; padding:0; }
         .pb-shead .pb-split:hover { border-color:var(--p-primary-color,#4a90d9); }
 
-        /* pin chips — which value each pinned token is locked to (green to match the token tint) */
+        /* token chips — which value each pinned token is locked to, and which tokens
+           deal from a deck. Each matches its own token tint (green pin / amber deck). */
         .pb-pins { display:flex; flex-wrap:wrap; gap:4px; padding:1px 2px 0; }
         .pb-pinchip { display:inline-flex; align-items:center; gap:3px; max-width:100%; cursor:pointer;
             font-size:11px; line-height:1.4; padding:1px 3px 1px 5px; border-radius:10px;
             color:var(--input-text,#ddd); background:rgba(94,201,160,0.14); border:1px solid rgba(94,201,160,0.45); }
         .pb-pinchip:hover { border-color:#5ec9a0; }
+        .pb-pinchip.is-deck { background:rgba(224,164,74,0.14); border-color:rgba(224,164,74,0.45); }
+        .pb-pinchip.is-deck:hover { border-color:#e0a44a; }
+        .pb-pinchip.is-deck .pb-pinval { font-family:ui-monospace,monospace; }
         .pb-pinchip .pb-pinval { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:170px; }
         .pb-pinchip .pb-pinx { flex:0 0 auto; height:16px; padding:0 2px; border:0; border-radius:3px;
             background:transparent; color:var(--descrip-text,#888); font-size:11px; line-height:1; cursor:pointer; }
@@ -354,12 +360,15 @@ const TEMPLATE = `
         <div class="pb-backdrop" v-html="highlight(s)"></div>
         <textarea class="pb-ta" v-pbgrow :value="s.content" @input="setContent(s,$event)" @scroll="onScroll"
                   @keydown="onTaKeydown(s,$event)" @keyup="trackCaret(s,$event)" @click="trackCaret(s,$event)" @select="trackCaret(s,$event)"
-                  @dblclick="onTaDblClick(s,$event)" title="Double-click a {…}/[…] token to edit its options · Alt+Enter splits the section here" spellcheck="false" placeholder="prompt — {a|b|c} choice · [a|b|c] array · __wildcard__"></textarea>
+                  @dblclick="onTaDblClick(s,$event)" title="Double-click a token to edit it — options, pin, and Order/Deck for […] and __wildcards__ · Alt+Enter splits the section here" spellcheck="false" placeholder="prompt — {a|b|c} choice · [a|b|c] array · __wildcard__ — double-click a token to edit or set Deck"></textarea>
       </div>
-      <div v-if="!s.collapsed && sectionPins(s).length" class="pb-pins">
-        <span v-for="p in sectionPins(s)" :key="p.key" class="pb-pinchip" @click="openPinEditor(s,p)" :title="p.raw + '  →  ' + p.value">
-          📌<span class="pb-pinval">{{ p.value }}</span>
-          <button class="pb-pinx" @click.stop="unpin(p.key)" title="Unpin — let it re-roll">✕</button>
+      <div v-if="!s.collapsed && sectionChips(s).length" class="pb-pins">
+        <span v-for="p in sectionChips(s)" :key="p.key" class="pb-pinchip" :class="'is-'+p.kind"
+              @click="openPinEditor(s,p)"
+              :title="p.kind==='pin' ? p.raw + '  →  ' + p.value : p.raw + '  —  deck: every option once before any repeat'">
+          {{ p.kind==='pin' ? '📌' : '🎴' }}<span class="pb-pinval">{{ p.value }}</span>
+          <button class="pb-pinx" @click.stop="dropChip(p)"
+                  :title="p.kind==='pin' ? 'Unpin — let it re-roll' : 'Back to Order — step through in sequence'">✕</button>
         </span>
       </div>
     </div>
@@ -532,8 +541,8 @@ export function mountEditor({ container, model, live, getSeed, setSeed, build, o
 
             // defined choice names, so %name% refs tint live (undefined → error)
             const choiceNameSet = () => new Set((model.choices || []).map((c) => c.name).filter(Boolean));
-            // pins + choice names read here, so the backdrop re-tints the moment either changes
-            const highlight = (s) => highlightHtml(s.content, s.id, model.pins, choiceNameSet());
+            // pins + choice names + modes read here, so the backdrop re-tints the moment any changes
+            const highlight = (s) => highlightHtml(s.content, s.id, model.pins, choiceNameSet(), model.modes);
 
             // ---- section mutations ----
             const setTitle = (s, v) => { s.title = v; changed(); };
@@ -741,21 +750,28 @@ export function mountEditor({ container, model, live, getSeed, setSeed, build, o
                 popup.open = false;
             };
 
-            // ---- pin chips: surface which value each pinned token is stuck on ----
-            const sectionPins = (s) => {
+            // ---- token chips: surface the state you can't see in the text itself —
+            // which value a token is pinned to, and which tokens deal from a deck ----
+            const sectionChips = (s) => {
                 const pins = model.pins || {};
+                const modes = model.modes || {};
                 const counts = {};
                 const out = [];
                 for (const seg of tokenize(s.content || "")) {
                     if (seg.type === "text") continue;
                     const occ = counts[seg.text] ?? 0; counts[seg.text] = occ + 1;
                     const key = `${s.id}|${seg.text}|${occ}`;
+                    // A pin overrides the mode at build, so never claim both.
                     if (pins[key] !== undefined)
-                        out.push({ key, raw: seg.text, type: seg.type, value: pins[key], start: seg.start });
+                        out.push({ kind: "pin", key, raw: seg.text, type: seg.type, value: pins[key], start: seg.start });
+                    else if (modes[key] === "deck")
+                        out.push({ kind: "deck", key, raw: seg.text, type: seg.type, value: seg.text, start: seg.start });
                 }
                 return out;
             };
             const unpin = (key) => { const p = { ...model.pins }; delete p[key]; model.pins = p; changed(); };
+            const undeck = (key) => { const m = { ...model.modes }; delete m[key]; model.modes = m; changed(); };
+            const dropChip = (c) => (c.kind === "pin" ? unpin(c.key) : undeck(c.key));
             // every token type now has a dialog — a wildcard's is the reduced (mode-only) one
             const openPinEditor = (s, pin) => openTokenEditor(s, pin.start + 1);
 
@@ -977,7 +993,7 @@ export function mountEditor({ container, model, live, getSeed, setSeed, build, o
                 doPreview, doBuild, reseed, restore, copyOut,
                 popup, popupHint, canDeck, titlePlaceholder, onTaDblClick, addOption, togglePin, closeTokenEditor,
                 optRowClass, onOptDragStart, onOptDragOver, onOptDrop, onOptDragEnd,
-                sectionPins, unpin, openPinEditor, trackCaret, onTaKeydown, splitAtCaret,
+                sectionChips, unpin, undeck, dropChip, openPinEditor, trackCaret, onTaKeydown, splitAtCaret,
                 addChoice, removeChoice, selectSingle, selOptValue, multiSummary, openChoiceEditor,
                 choiceDlg, sanitizeName, modeHint, setDlgMode, setDlgSingle, toggleDlgMulti,
                 addChoiceOption, removeChoiceOption, closeChoiceEditor,

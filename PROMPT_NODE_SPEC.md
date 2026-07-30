@@ -95,6 +95,8 @@ Every option appears exactly once **per deck** — that is, per aligned window `
 
 **No new syntax.** The mode is a sparse per-token entry in node state, keyed exactly like pins (`hash(sectionId + rawToken + occurrence)`, §5) and set from the token popup editor that already exists. Editing the token invalidates its mode the same self-healing way pins work. Nothing new to parse — and no new delimiter to collide with `(…)` emphasis or `<lora:…>`.
 
+**Surfaced like a pin, because an invisible mode may as well not exist.** A decked token gets an amber tint in the highlight backdrop (pins are green) and a 🎴 chip in the row under the section, clicking through to the dialog and dropping back to Order via its ✕ — the same affordances pins already had. A pin outranks a deck: it wins the tint and the chip, and the mode is kept underneath so unpinning restores it.
+
 **Honest limitation.** The coverage guarantee holds while `t` advances by exactly 1 per run — `control_after_generate = increment`, or Build mode's counter. Under `randomize`, `t` jumps arbitrarily and you get random picks with locally-shuffled structure, not guaranteed coverage. Say so on the mode toggle. Pixaroma's stateful deck *does* hold under any seed mode — that's the one thing their design buys, and it costs them reproducibility everywhere else. The trade is right for us, but it is a real trade, not a free win.
 
 **Interactions.** A pinned token skips the roll entirely, deck or not (§3 lever 2). Changing `n` by editing the option list moves every deck boundary and effectively restarts the sequence — same practical outcome as Pixaroma's "editing the list starts its deck over", with no migration step.

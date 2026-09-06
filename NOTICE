@@ -15,6 +15,19 @@ this project:
   - Multi Lora Loader
       nodes/multi_lora_loader.py, js/multi_lora_loader.js, js/lora/,
       services/lora_info.py
+  - MiniMax H3 Canvas
+      nodes/minimax_h3.py
+
+Vendored first-party code
+-------------------------
+services/h3kit/canvas.py and services/h3kit/timing.py are byte-for-byte copies
+of the same-named modules in johna101/gallery's `packages/h3kit` (MIT License,
+Copyright (c) 2025-2026 Biagio Maffettone) — the same author as this project.
+
+They are copies rather than adaptations on purpose: MiniMax H3 Canvas has to
+agree exactly with that compiler about what a legal canvas and frame count are,
+and keeping the files identical makes "has this drifted?" a byte comparison.
+Gallery's own test suite carries that comparison. Edit them there, not here.
 
 Vendored third-party code
 -------------------------

@@ -36,6 +36,27 @@ with Ctrl+M or from a second toggle node shows up here too. Modern alternatives
 to rgthree's Fast Groups Muter / Bypasser, which draw canvas widgets the Vue
 renderer (Nodes 2.0) does not render.
 
+### MiniMax H3 Canvas (Mottoes)
+Say aspect ratio, area in megapixels and roughly how long; get `width`, `height`,
+`length`, `fps` and the duration you actually got. Wire the first three into
+**MiniMax H3 Reference to Video** (or Image to Video) and `fps` into **Create
+Video**.
+
+H3 takes three numbers none of which can be picked freely — each axis has to land
+on a multiple of 32, and the frame count has to satisfy `n % 17 == 5` (5, 22, 39
+… one legal duration every ~0.708s at 24fps). A graph with them typed in is one
+you cannot safely edit: drop the quality to look at the blocking and you are
+doing square roots by hand; change the duration and you are counting in
+seventeens. This node puts those rules back inside the workflow, so the same file
+can be re-tiered, re-timed or hung off a different sampler and still be right.
+
+Duration is a **ceiling**: `seconds` rounds up to the next legal frame count, the
+same direction the model's own alignment rounds, and the `seconds` output says
+what you got. Nothing is clamped to H3's trained range (~124–362 frames) — outside
+it is legal and out of distribution, which is a thing to be told about rather than
+prevented. The aspect is a text field rather than a dropdown so that any ratio an
+application passes in is accepted; `:`, `x` and `/` all work as separators.
+
 ## Commands
 
 Two frontend-only extras, no node involved. Both appear in the command palette
@@ -84,3 +105,8 @@ original work. Three helper modules under `services/` (`hashing.py`,
 `civitai.py`, `file_utils.py`) are vendored from
 [ComfyUI-Image-Saver](https://github.com/alexopus/ComfyUI-Image-Saver)
 (MIT © 2023 Girish Gopaul) — see [NOTICE](NOTICE) for full attribution.
+
+`services/h3kit/` is a byte-for-byte copy of two modules from the same author's
+Gallery project, so that MiniMax H3 Canvas and that application's compiler cannot
+disagree about what a legal canvas and frame count are. **Edit them there and
+re-copy, not here** — Gallery's test suite fails on any difference.

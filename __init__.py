@@ -9,6 +9,7 @@ from .nodes.prompt_builder import PromptBuilder
 from .nodes.introspection import WorkflowMetadataResolver
 from .nodes.multi_lora_loader import MultiLoraLoader
 from .nodes.group_toggle import GroupMuter, GroupBypasser
+from .nodes.minimax_h3 import MiniMaxH3Canvas
 
 # Display names double as the node type ids — the frontend (js/*.js) references
 # these exact strings, so keep them in lock-step.
@@ -18,6 +19,7 @@ NODE_CLASS_MAPPINGS: dict[str, Any] = {
     "Multi Lora Loader (Mottoes)": MultiLoraLoader,
     "Group Muter (Mottoes)": GroupMuter,
     "Group Bypasser (Mottoes)": GroupBypasser,
+    "MiniMax H3 Canvas (Mottoes)": MiniMaxH3Canvas,
 }
 
 WEB_DIRECTORY = "js"

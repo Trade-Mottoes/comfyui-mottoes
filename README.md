@@ -57,6 +57,14 @@ it is legal and out of distribution, which is a thing to be told about rather th
 prevented. The aspect is a text field rather than a dropdown so that any ratio an
 application passes in is accepted; `:`, `x` and `/` all work as separators.
 
+### MiniMax H3 Reference to Video (Mottoes)
+Core's **MiniMax H3 Reference to Video** with up to 16 reference images, videos and
+audios, where core declares 9, 3 and 3. Those limits are the stock node's input
+declarations, not the model's: its `execute` walks whatever it is given. This node
+declares the same inputs with more slots and hands `execute` to the stock node, so
+references are encoded exactly as core encodes them. Every reference rides every
+sampling step, so each one added costs render time.
+
 ## Commands
 
 Two frontend-only extras, no node involved. Both appear in the command palette
@@ -95,8 +103,9 @@ python -m pytest tests/        # or: python -m unittest discover -s tests
 ```
 
 The Python resolution/parse logic is dependency-free and unit-tested without a
-running ComfyUI. The frontend vendors Vue (`js/lib/`) and compiles templates at
-runtime — no build step.
+running ComfyUI. The reference node is built from core's own node, so its tests
+skip unless ComfyUI imports: run them from the ComfyUI folder with its venv. The
+frontend vendors Vue (`js/lib/`) and compiles templates at runtime — no build step.
 
 ## License
 

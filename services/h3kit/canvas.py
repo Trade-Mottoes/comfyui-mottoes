@@ -19,7 +19,7 @@ import math
 import re
 
 __all__ = ["CANVAS_MULTIPLE", "NATIVE_MEGAPIXELS", "DEFAULT_ASPECT", "DEFAULT_MEGAPIXELS",
-           "canvas_for", "parse_aspect", "aspect_of"]
+           "EXACT", "canvas_for", "parse_aspect", "aspect_of"]
 
 CANVAS_MULTIPLE = 32
 NATIVE_WIDTH, NATIVE_HEIGHT = 1344, 768
@@ -31,6 +31,16 @@ NATIVE_MEGAPIXELS = (NATIVE_WIDTH * NATIVE_HEIGHT) / 1_000_000  # ~1.032
 #: role `seed=None` plays: legal, and not a decision anybody made.
 DEFAULT_ASPECT = "16:9"
 DEFAULT_MEGAPIXELS = NATIVE_MEGAPIXELS
+
+#: Canvases fixed by hand, as (width:height ratio, megapixels) -> pixels. The upgrade's
+#: upscaler stretches a take to its target, so a target that snaps to a different shape
+#: from the draft's distorts it. 16:9 does: the draft is 832x480 and 1.6 MP derives as
+#: 1696x960, 1.9% wider. 1.6 MP is therefore the draft doubled. The other common aspects
+#: already derive to an exact double.
+EXACT = {
+    (16 / 9, 1.6): (1664, 960),
+    (9 / 16, 1.6): (960, 1664),
+}
 
 _ASPECT = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*[:x/]\s*(\d+(?:\.\d+)?)\s*$")
 
@@ -54,16 +64,22 @@ def canvas_for(aspect: str, megapixels: float) -> tuple[int, int]:
     """The pixel pair for an aspect and an area, each axis on a multiple of 32.
 
     Rounding to 32 moves the real area a little off the request; that is the node's
-    constraint, not ours, and the receipt records the pixels that actually ran.
+    constraint, not ours, and the receipt records the pixels that actually ran. A pair in
+    `EXACT` wins over the derived one.
 
     >>> canvas_for("16:9", 1.032)
     (1344, 768)
     >>> canvas_for("2:3", 1.0)
     (832, 1216)
+    >>> canvas_for("16:9", 0.4), canvas_for("16:9", 1.6)
+    ((832, 480), (1664, 960))
     """
     if megapixels <= 0:
         raise ValueError(f"megapixels must be positive, got {megapixels!r}")
     ratio = parse_aspect(aspect)
+    for (exact_ratio, exact_megapixels), pair in EXACT.items():
+        if math.isclose(ratio, exact_ratio) and math.isclose(megapixels, exact_megapixels):
+            return pair
     pixels = megapixels * 1_000_000
     height = math.sqrt(pixels / ratio)
     width = ratio * height
